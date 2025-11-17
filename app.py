@@ -182,50 +182,96 @@ def init_db():
         db.commit()
 
 
-def pwd_shell_cmd(hostname, port, user, pwd, cmd):
+def get_host_connection_info(host_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('''
+        SELECT ssh_port, username, ip_address, auth_method, password, private_key, operating_system,
+               COALESCE(requires_sudo, 0) AS requires_sudo,
+               COALESCE(passwordless_sudo, 0) AS passwordless_sudo,
+               sudo_password
+        FROM hosts WHERE id = ?
+    ''', (host_id,))
+    host = cursor.fetchone()
+    if not host:
+        raise ValueError('主机不存在')
+    host_dict = dict(host)
+    host_dict['requires_sudo'] = bool(host_dict.get('requires_sudo'))
+    host_dict['passwordless_sudo'] = bool(host_dict.get('passwordless_sudo'))
+    return host_dict
+
+
+def pwd_shell_cmd(hostname, port, user, pwd, cmd, *, needs_sudo=False, passwordless_sudo=False, sudo_password=None):
     stdin = None
     stdout = None
     stderr = None
     try:
         ssh.set_missing_host_key_policy(AutoAddPolicy())
         ssh.connect(hostname=hostname, port=port, username=user, password=pwd, timeout=5)
-        # stdin, stdout, stderr = ssh.exec_command('iptables -nL IN_public_allow --line-number -t filter -v')
-        stdin, stdout, stderr = ssh.exec_command(cmd)
-        # stdin, stdout, stderr = ssh.exec_command('iptables -nL INPUT --line-number -t filter -v')
-        # 读取输出（确保数据被完全读取）
+        remote_cmd = cmd
+        if needs_sudo:
+            remote_cmd = f"sudo -S -p '' {cmd}"
+        stdin, stdout, stderr = ssh.exec_command(remote_cmd)
+        if needs_sudo and not passwordless_sudo:
+            if not sudo_password:
+                raise ValueError('需要sudo密码，但未提供')
+            stdin.write(f"{sudo_password}\n")
+            stdin.flush()
         output = stdout.read().decode()
         error = stderr.read().decode()
+        exit_status = stdout.channel.recv_exit_status()
+        if exit_status != 0:
+            raise RuntimeError(error.strip() or output.strip() or f'命令执行失败: {cmd}')
         return output
     except Exception as e:
-        print(f"SSH 操作失败: {e}")
+        raise
     finally:
-        # 先关闭流对象（关键步骤）
         if stdin:
             stdin.close()
         if stdout:
             stdout.close()
         if stderr:
             stderr.close()
-        # 再关闭 SSH 连接
         if ssh:
             ssh.close()
 
 
-def sshkey_shell_cmd(hostname, port, user, private_key_str, cmd):
+def sshkey_shell_cmd(hostname, port, user, private_key_str, cmd, *, needs_sudo=False, passwordless_sudo=False,
+                     sudo_password=None):
+    stdin = None
+    stdout = None
+    stderr = None
     try:
+        if not private_key_str:
+            raise ValueError('缺少私钥内容')
         ssh.set_missing_host_key_policy(AutoAddPolicy())
-        key_file = StringIO(private_key_str)  # 模拟文件对象
-        pkey = paramiko.RSAKey.from_private_key(key_file)  # 转换为RSA密钥对象
+        key_file = StringIO(private_key_str)
+        pkey = paramiko.RSAKey.from_private_key(key_file)
         ssh.connect(hostname=hostname, port=port, username=user, pkey=pkey, timeout=5,
                     look_for_keys=False,
                     allow_agent=False)
-        stdin, stdout, stderr = ssh.exec_command(cmd)
+        remote_cmd = cmd
+        if needs_sudo:
+            remote_cmd = f"sudo -S -p '' {cmd}"
+        stdin, stdout, stderr = ssh.exec_command(remote_cmd)
+        if needs_sudo and not passwordless_sudo:
+            if not sudo_password:
+                raise ValueError('需要sudo密码，但未提供')
+            stdin.write(f"{sudo_password}\n")
+            stdin.flush()
         output = stdout.read().decode()
+        error = stderr.read().decode()
+        exit_status = stdout.channel.recv_exit_status()
+        if exit_status != 0:
+            raise RuntimeError(error.strip() or output.strip() or f'命令执行失败: {cmd}')
         return output
-    except Exception as e:
-        print(f"SSH 操作失败: {e}")
     finally:
-        # 再关闭 SSH 连接
+        if stdin:
+            stdin.close()
+        if stdout:
+            stdout.close()
+        if stderr:
+            stderr.close()
         if ssh:
             ssh.close()
 
@@ -318,33 +364,40 @@ def index():
 @login_required
 def rules_in():
     all_params = dict(request.args)
-    host_id = all_params['host_id']
+    host_id = int(all_params['host_id'])
     try:
-        # 获取数据库连接
-        db = get_db()
-        cursor = db.cursor()
-        # 查询所有主机数据
-        cursor.execute('''
-        SELECT ssh_port, username, ip_address, auth_method, password, private_key,operating_system
-        FROM hosts where id = {}
-        '''.format(host_id))
-        # 获取所有记录
-        # 1. 获取所有列名（从 cursor.description 中提取）
-        columns = [column[0] for column in cursor.description]
-        # 2. 将每行数据与列名配对，转换为字典
-        hosts = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        hostname = hosts[0]['ip_address']
-        port = hosts[0]['ssh_port']
-        user = hosts[0]['username']
-        pwd = hosts[0]['password']
-        auth_method = hosts[0]['auth_method']
-        private_key = hosts[0]['private_key']
+        host = get_host_connection_info(host_id)
+        hostname = host['ip_address']
+        port = host['ssh_port']
+        user = host['username']
+        pwd = host['password']
+        auth_method = host['auth_method']
+        private_key = host['private_key']
+        requires_sudo = host['requires_sudo']
+        passwordless_sudo = host['passwordless_sudo']
+        sudo_password = host['sudo_password']
         if auth_method == 'password':
-            iptables_output = pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                                            cmd='iptables -nL INPUT --line-number -t filter')
+            iptables_output = pwd_shell_cmd(
+                hostname=hostname,
+                user=user,
+                port=port,
+                pwd=pwd,
+                cmd='iptables -nL INPUT --line-number -t filter',
+                needs_sudo=requires_sudo,
+                passwordless_sudo=passwordless_sudo,
+                sudo_password=sudo_password
+            )
         else:
-            iptables_output = sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                               cmd='iptables -nL INPUT --line-number -t filter')
+            iptables_output = sshkey_shell_cmd(
+                hostname=hostname,
+                user=user,
+                port=port,
+                private_key_str=private_key,
+                cmd='iptables -nL INPUT --line-number -t filter',
+                needs_sudo=requires_sudo,
+                passwordless_sudo=passwordless_sudo,
+                sudo_password=sudo_password
+            )
         data_list = get_rule(iptables_output)
         return render_template('rule.html', data_list=data_list, id=host_id)
     except Exception as e:
@@ -356,33 +409,40 @@ def rules_in():
 @login_required
 def rules_out():
     all_params = dict(request.args)
-    host_id = all_params['host_id']
+    host_id = int(all_params['host_id'])
     try:
-        # 获取数据库连接
-        db = get_db()
-        cursor = db.cursor()
-        # 查询所有主机数据
-        cursor.execute('''
-        SELECT ssh_port, username, ip_address, auth_method, password, private_key,operating_system
-        FROM hosts where id = {}
-        '''.format(host_id))
-        # 获取所有记录
-        # 1. 获取所有列名（从 cursor.description 中提取）
-        columns = [column[0] for column in cursor.description]
-        # 2. 将每行数据与列名配对，转换为字典
-        hosts = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        hostname = hosts[0]['ip_address']
-        port = hosts[0]['ssh_port']
-        user = hosts[0]['username']
-        pwd = hosts[0]['password']
-        auth_method = hosts[0]['auth_method']
-        private_key = hosts[0]['private_key']
+        host = get_host_connection_info(host_id)
+        hostname = host['ip_address']
+        port = host['ssh_port']
+        user = host['username']
+        pwd = host['password']
+        auth_method = host['auth_method']
+        private_key = host['private_key']
+        requires_sudo = host['requires_sudo']
+        passwordless_sudo = host['passwordless_sudo']
+        sudo_password = host['sudo_password']
         if auth_method == 'password':
-            iptables_output = pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                                            cmd='iptables -nL OUTPUT --line-number -t filter')
+            iptables_output = pwd_shell_cmd(
+                hostname=hostname,
+                user=user,
+                port=port,
+                pwd=pwd,
+                cmd='iptables -nL OUTPUT --line-number -t filter',
+                needs_sudo=requires_sudo,
+                passwordless_sudo=passwordless_sudo,
+                sudo_password=sudo_password
+            )
         else:
-            iptables_output = sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                               cmd='iptables -nL OUTPUT --line-number -t filter')
+            iptables_output = sshkey_shell_cmd(
+                hostname=hostname,
+                user=user,
+                port=port,
+                private_key_str=private_key,
+                cmd='iptables -nL OUTPUT --line-number -t filter',
+                needs_sudo=requires_sudo,
+                passwordless_sudo=passwordless_sudo,
+                sudo_password=sudo_password
+            )
         data_list = get_rule(iptables_output)
         return render_template('rule.html', data_list=data_list, id=host_id)
     except Exception as e:
@@ -396,388 +456,109 @@ def rules_out():
 @permission_required('iptab_edit')  # 添加规则编辑权限
 def rules_update():
     all_params = request.get_json()
-    host_id = all_params['host_id']
+    host_id = int(all_params['host_id'])
     rule_id = all_params['rule_id']
     direction = all_params['direction']
-    # 获取规则的具体数据
     try:
-        # 获取数据库连接
-        db = get_db()
-        cursor = db.cursor()
-        # 查询所有主机数据
-        cursor.execute('''
-        SELECT ssh_port, username, ip_address, auth_method, password, private_key,operating_system
-        FROM hosts where id = {}
-        '''.format(host_id))
-        # 获取所有记录
-        # 1. 获取所有列名（从 cursor.description 中提取）
-        columns = [column[0] for column in cursor.description]
-        # 2. 将每行数据与列名配对，转换为字典
-        hosts = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        hostname = hosts[0]['ip_address']
-        port = hosts[0]['ssh_port']
-        user = hosts[0]['username']
-        pwd = hosts[0]['password']
-        auth_method = hosts[0]['auth_method']
-        private_key = hosts[0]['private_key']
-        operating_system = hosts[0]['operating_system']
-        if auth_method == 'password':
-            # 删除
-            pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                          cmd='iptables -D {} {}'.format(direction, rule_id))
-            # 正常的tcp或udp规则
-            if 'tcp' in all_params['protocol'] or 'udp' in all_params['protocol']:
-                # 正常的端口
-                if '-1/-1' not in all_params['port']:
-                    # 添加规则中的：正常端口中的范围端口
-                    if '-' in all_params['port']:
-                        new_port = all_params['port'].replace("-", ":")
-                        if all_params['limit'] == '':
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], new_port,
-                                all_params['auth_policy'], all_params['description'])
-                        else:
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], new_port,
-                                all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
+        host = get_host_connection_info(host_id)
+        hostname = host['ip_address']
+        port = host['ssh_port']
+        user = host['username']
+        pwd = host['password']
+        auth_method = host['auth_method']
+        private_key = host['private_key']
+        operating_system = host['operating_system']
+        requires_sudo = host['requires_sudo']
+        passwordless_sudo = host['passwordless_sudo']
+        sudo_password = host['sudo_password']
 
-                    # 添加规则中的: 正常端口中的多个端口
-                    elif ',' in all_params['port']:
-                        if all_params['limit'] == '':
-                            cmd = 'iptables -I {}  {} -s {} -p {} -m multiport --dports {} -j {} -m comment --comment "{}"'.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                                all_params['port'],
-                                all_params['auth_policy'], all_params['description'])
-                        else:
-                            cmd = 'iptables -I {}  {} -s {} -p {} -m multiport --dports {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment --comment "{}" '.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                                all_params['port'],
-                                all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
+        def run_cmd(command: str):
+            if auth_method == 'password':
+                return pwd_shell_cmd(
+                    hostname=hostname,
+                    user=user,
+                    port=port,
+                    pwd=pwd,
+                    cmd=command,
+                    needs_sudo=requires_sudo,
+                    passwordless_sudo=passwordless_sudo,
+                    sudo_password=sudo_password
+                )
+            return sshkey_shell_cmd(
+                hostname=hostname,
+                user=user,
+                port=port,
+                private_key_str=private_key,
+                cmd=command,
+                needs_sudo=requires_sudo,
+                passwordless_sudo=passwordless_sudo,
+                sudo_password=sudo_password
+            )
 
-                    else:
-                        if all_params['limit'] == '':
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                                all_params['port'],
-                                all_params['auth_policy'], all_params['description'])
-                        else:
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                                all_params['port'],
-                                all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-                else:
+        run_cmd('iptables -D {} {}'.format(direction, rule_id))
+
+        if 'tcp' in all_params['protocol'] or 'udp' in all_params['protocol']:
+            if '-1/-1' not in all_params['port']:
+                if '-' in all_params['port']:
+                    new_port = all_params['port'].replace('-', ':')
                     if all_params['limit'] == '':
-                        # tcp 或udp的所有端口
-                        cmd = 'iptables -I {}  {} -s {} -p {} -j {} -m comment  --comment "{}"'.format(
-                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
+                        cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
+                            direction, rule_id, all_params['auth_object'], all_params['protocol'], new_port,
                             all_params['auth_policy'], all_params['description'])
                     else:
-                        cmd = 'iptables -I {}  {} -s {} -p {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
+                        cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
+                            direction, rule_id, all_params['auth_object'], all_params['protocol'], new_port,
                             all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-            # ICMP 或 all 协议的规则
+                elif ',' in all_params['port']:
+                    if all_params['limit'] == '':
+                        cmd = 'iptables -I {}  {} -s {} -p {} -m multiport --dports {} -j {} -m comment --comment "{}"'.format(
+                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
+                            all_params['port'],
+                            all_params['auth_policy'], all_params['description'])
+                    else:
+                        cmd = 'iptables -I {}  {} -s {} -p {} -m multiport --dports {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment --comment "{}" '.format(
+                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
+                            all_params['port'],
+                            all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
+                else:
+                    if all_params['limit'] == '':
+                        cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
+                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
+                            all_params['port'],
+                            all_params['auth_policy'], all_params['description'])
+                    else:
+                        cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
+                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
+                            all_params['port'],
+                            all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
             else:
                 if all_params['limit'] == '':
-                    cmd = 'iptables -I {}  {} -s {} -p {}  -j {} -m comment  --comment "{}"'.format(
+                    cmd = 'iptables -I {}  {} -s {} -p {} -j {} -m comment  --comment "{}"'.format(
                         direction, rule_id, all_params['auth_object'], all_params['protocol'],
                         all_params['auth_policy'], all_params['description'])
                 else:
-                    cmd = 'iptables -I {}  {} -s {} -p {}  -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
+                    cmd = 'iptables -I {}  {} -s {} -p {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
                         direction, rule_id, all_params['auth_object'], all_params['protocol'],
                         all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-
-            # 添加
-            pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                          cmd=cmd)
-            if operating_system == 'centos' or operating_system == 'redhat':
-                pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                              cmd='iptables-save > /etc/sysconfig/iptables')
-            elif operating_system == 'debian':
-                pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                              cmd='iptables-save > /etc/iptables/rules.v4')
-            elif operating_system == 'ubuntu':
-                pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                              cmd='iptables-save > /etc/iptables/rules.v4')
-            # 查看
-            iptables_output = pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                                            cmd='iptables -nL {} --line-number -t filter'.format(direction))
-
         else:
-            sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                             cmd='iptables -D {} {}'.format(direction, rule_id))
-            if operating_system == 'centos' or operating_system == 'redhat':
-                sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                 cmd='iptables-save > /etc/sysconfig/iptables')
-            elif operating_system == 'debian':
-                sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                 cmd='iptables-save > /etc/iptables/rules.v4')
-            elif operating_system == 'ubuntu':
-                sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                 cmd='iptables-save > /etc/iptables/rules.v4')
-            # 正常的tcp或udp规则
-            if 'tcp' in all_params['protocol'] or 'udp' in all_params['protocol']:
-                # 正常的端口
-                if '-1/-1' not in all_params['port']:
-                    # 添加规则中的：正常端口中的范围端口
-                    if '-' in all_params['port']:
-                        new_port = all_params['port'].replace("-", ":")
-                        if all_params['limit'] == '':
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], new_port,
-                                all_params['auth_policy'], all_params['description'])
-                        else:
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], new_port,
-                                all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-
-                    # 添加规则中的: 正常端口中的多个端口
-                    elif ',' in all_params['port']:
-                        if all_params['limit'] == '':
-                            cmd = 'iptables -I {}  {} -s {} -p {} -m multiport --dports {} -j {} -m comment --comment "{}"'.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                                all_params['port'],
-                                all_params['auth_policy'], all_params['description'])
-                        else:
-                            cmd = 'iptables -I {}  {} -s {} -p {} -m multiport --dports {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment --comment "{}" '.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                                all_params['port'],
-                                all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-
-                    else:
-                        if all_params['limit'] == '':
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                                all_params['port'],
-                                all_params['auth_policy'], all_params['description'])
-                        else:
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                                all_params['port'],
-                                all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-                else:
-                    if all_params['limit'] == '':
-                        # tcp 或udp的所有端口
-                        cmd = 'iptables -I {}  {} -s {} -p {} -j {} -m comment  --comment "{}"'.format(
-                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                            all_params['auth_policy'], all_params['description'])
-                    else:
-                        cmd = 'iptables -I {}  {} -s {} -p {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                            all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-            # ICMP 或 all 协议的规则
+            if all_params['limit'] == '':
+                cmd = 'iptables -I {}  {} -s {} -p {}  -j {} -m comment  --comment "{}"'.format(
+                    direction, rule_id, all_params['auth_object'], all_params['protocol'],
+                    all_params['auth_policy'], all_params['description'])
             else:
-                if all_params['limit'] == '':
-                    cmd = 'iptables -I {}  {} -s {} -p {}  -j {} -m comment  --comment "{}"'.format(
-                        direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                        all_params['auth_policy'], all_params['description'])
-                else:
-                    cmd = 'iptables -I {}  {} -s {} -p {}  -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                        direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                        all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
+                cmd = 'iptables -I {}  {} -s {} -p {}  -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
+                    direction, rule_id, all_params['auth_object'], all_params['protocol'],
+                    all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
 
-            # 添加
-            sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                             cmd=cmd)
-            if operating_system == 'centos' or operating_system == 'redhat':
-                sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                 cmd='iptables-save > /etc/sysconfig/iptables')
-            elif operating_system == 'debian':
-                sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                 cmd='iptables-save > /etc/iptables/rules.v4')
-            elif operating_system == 'ubuntu':
-                sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                 cmd='iptables-save > /etc/iptables/rules.v4')
-            # 查看
-            iptables_output = sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                               cmd='iptables -nL {} --line-number -t filter'.format(direction))
-        data_list = get_rule(iptables_output)
-        return render_template('rule.html', data_list=data_list, id=host_id)
-    except Exception as e:
-        # 错误处理
-        return f"获取主机数据失败: {str(e)}", 500
+        run_cmd(cmd)
 
+        if operating_system in ('centos', 'redhat'):
+            run_cmd('iptables-save > /etc/sysconfig/iptables')
+        elif operating_system in ('debian', 'ubuntu'):
+            run_cmd('iptables-save > /etc/iptables/rules.v4')
 
-# 添加规则
-@app.route("/rules_add", methods=['POST'])
-@login_required
-@permission_required('iptab_add')  # 添加规则添加权限
-def rules_add():
-    all_params = request.get_json()
-    print(all_params)
-    host_id = all_params['host_id']
-    rule_id = all_params['rule_id']
-    direction = all_params['direction']
-    # 获取规则的具体数据
-    try:
-        # 获取数据库连接
-        db = get_db()
-        cursor = db.cursor()
-        # 查询所有主机数据
-        cursor.execute('''
-        SELECT ssh_port, username, ip_address, auth_method, password, private_key, operating_system
-        FROM hosts where id = {}
-        '''.format(host_id))
-        # 获取所有记录
-        # 1. 获取所有列名（从 cursor.description 中提取）
-        columns = [column[0] for column in cursor.description]
-        # 2. 将每行数据与列名配对，转换为字典
-        hosts = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        hostname = hosts[0]['ip_address']
-        port = hosts[0]['ssh_port']
-        user = hosts[0]['username']
-        pwd = hosts[0]['password']
-        auth_method = hosts[0]['auth_method']
-        private_key = hosts[0]['private_key']
-        operating_system = hosts[0]['operating_system']
-        if auth_method == 'password':
-            # 正常的tcp或udp规则
-            if 'tcp' in all_params['protocol'] or 'udp' in all_params['protocol']:
-                # 正常的端口
-                if '-1/-1' not in all_params['port']:
-                    # 添加规则中的：正常端口中的范围端口
-                    if '-' in all_params['port']:
-                        new_port = all_params['port'].replace("-", ":")
-                        if all_params['limit'] == '':
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], new_port,
-                                all_params['auth_policy'], all_params['description'])
-                        else:
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], new_port,
-                                all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
+        iptables_output = run_cmd('iptables -nL {} --line-number -t filter'.format(direction))
 
-                    # 添加规则中的: 正常端口中的多个端口
-                    elif ',' in all_params['port']:
-                        if all_params['limit'] == '':
-                            cmd = 'iptables -I {}  {} -s {} -p {} -m multiport --dports {} -j {} -m comment --comment "{}"'.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], all_params['port'],
-                                all_params['auth_policy'], all_params['description'])
-                        else:
-                            cmd = 'iptables -I {}  {} -s {} -p {} -m multiport --dports {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment --comment "{}" '.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], all_params['port'],
-                                all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-
-                    else:
-                        if all_params['limit'] == '':
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], all_params['port'],
-                                all_params['auth_policy'], all_params['description'])
-                        else:
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], all_params['port'],
-                                all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-                else:
-                    if all_params['limit'] == '':
-                        # tcp 或udp的所有端口
-                        cmd = 'iptables -I {}  {} -s {} -p {} -j {} -m comment  --comment "{}"'.format(
-                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                            all_params['auth_policy'], all_params['description'])
-                    else:
-                        cmd = 'iptables -I {}  {} -s {} -p {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                            all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-            # ICMP 或 all 协议的规则
-            else:
-                if all_params['limit'] == '':
-                    cmd = 'iptables -I {}  {} -s {} -p {}  -j {} -m comment  --comment "{}"'.format(
-                        direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                        all_params['auth_policy'], all_params['description'])
-                else:
-                    cmd = 'iptables -I {}  {} -s {} -p {}  -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                        direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                        all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-
-            # 添加
-            pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                          cmd=cmd)
-            if operating_system == 'centos' or operating_system == 'redhat':
-                pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                              cmd='iptables-save > /etc/sysconfig/iptables')
-            elif operating_system == 'debian':
-                pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                              cmd='iptables-save > /etc/iptables/rules.v4')
-            elif operating_system == 'ubuntu':
-                pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                              cmd='iptables-save > /etc/iptables/rules.v4')
-
-            # 查看
-            iptables_output = pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                                            cmd='iptables -nL {} --line-number -t filter'.format(direction))
-
-        else:
-            # 正常的tcp或udp规则
-            if 'tcp' in all_params['protocol'] or 'udp' in all_params['protocol']:
-                # 正常的端口
-                if '-1/-1' not in all_params['port']:
-                    # 添加规则中的：正常端口中的范围端口
-                    if '-' in all_params['port']:
-                        new_port = all_params['port'].replace("-", ":")
-                        if all_params['limit'] == '':
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], new_port,
-                                all_params['auth_policy'], all_params['description'])
-                        else:
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], new_port,
-                                all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-
-                    # 添加规则中的: 正常端口中的多个端口
-                    elif ',' in all_params['port']:
-                        if all_params['limit'] == '':
-                            cmd = 'iptables -I {}  {} -s {} -p {} -m multiport --dports {} -j {} -m comment --comment "{}" '.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], all_params['port'],
-                                all_params['auth_policy'], all_params['description'])
-                        else:
-                            cmd = 'iptables -I {}  {} -s {} -p {} -m multiport --dports {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], all_params['port'],
-                                all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-
-                    else:
-                        if all_params['limit'] == '':
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], all_params['port'],
-                                all_params['auth_policy'], all_params['description'])
-                        else:
-                            cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                                direction, rule_id, all_params['auth_object'], all_params['protocol'], all_params['port'],
-                                all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-                else:
-                    # tcp 或udp的所有端口
-                    if all_params['limit'] == '':
-                        cmd = 'iptables -I {}  {} -s {} -p {} -j {} -m comment  --comment "{}"'.format(
-                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                            all_params['auth_policy'], all_params['description'])
-                    else:
-                        cmd = 'iptables -I {}  {} -s {} -p {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                            all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-            # ICMP 或 all 协议的规则
-            else:
-                if all_params['limit'] == '':
-                    cmd = 'iptables -I {}  {} -s {} -p {}  -j {} -m comment  --comment "{}"'.format(
-                        direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                        all_params['auth_policy'], all_params['description'])
-                else:
-                    cmd = 'iptables -I {}  {} -s {} -p {}  -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                        direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                        all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'], )
-
-            # 添加
-            sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                             cmd=cmd)
-            if operating_system == 'centos' or operating_system == 'redhat':
-                sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                 cmd='iptables-save > /etc/sysconfig/iptables')
-            elif operating_system == 'debian':
-                sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                 cmd='iptables-save > /etc/iptables/rules.v4')
-            elif operating_system == 'ubuntu':
-                sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                 cmd='iptables-save > /etc/iptables/rules.v4')
-
-            # 查看
-            iptables_output = sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                               cmd='iptables -nL {} --line-number -t filter'.format(direction))
         # 【修复】记录成功日志
         log_operation(
             user_id=current_user.id,
@@ -822,7 +603,6 @@ def rules_add():
             }),
             success=0
         )
-        # 错误处理
         return f"获取主机数据失败: {str(e)}", 500
 
 
@@ -832,52 +612,38 @@ def rules_add():
 @permission_required('iptab_del')  # 添加规则删除权限
 def del_rule():
     all_params = dict(request.args)
-    host_id = all_params['host_id']
+    host_id = int(all_params['host_id'])
     rule_id = all_params['rule_id']
     direction = all_params['direction']
     try:
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute('''
-        SELECT ssh_port, username, ip_address, auth_method, password, private_key,operating_system
-        FROM hosts where id = {}
-        '''.format(host_id))
-        # 获取所有记录
-        # 1. 获取所有列名（从 cursor.description 中提取）
-        columns = [column[0] for column in cursor.description]
-        # 2. 将每行数据与列名配对，转换为字典
-        hosts = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        hostname = hosts[0]['ip_address']
-        port = hosts[0]['ssh_port']
-        user = hosts[0]['username']
-        pwd = hosts[0]['password']
-        auth_method = hosts[0]['auth_method']
-        private_key = hosts[0]['private_key']
-        operating_system = hosts[0]['operating_system']
-        if auth_method == 'password':
-            iptables_output = pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                                            cmd='iptables -D {} {}'.format(direction, rule_id))
-            if operating_system == 'centos' or operating_system == 'redhat':
-                pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                              cmd='iptables-save > /etc/sysconfig/iptables')
-            elif operating_system == 'debian':
-                pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                              cmd='iptables-save > /etc/iptables/rules.v4')
-            elif operating_system == 'ubuntu':
-                pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                              cmd='iptables-save > /etc/iptables/rules.v4')
-        else:
-            iptables_output = sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                               cmd='iptables -D {} {}'.format(direction, rule_id))
-            if operating_system == 'centos' or operating_system == 'redhat':
-                sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                 cmd='iptables-save > /etc/sysconfig/iptables')
-            elif operating_system == 'debian':
-                sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                 cmd='iptables-save > /etc/iptables/rules.v4')
-            elif operating_system == 'ubuntu':
-                sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                 cmd='iptables-save > /etc/iptables/rules.v4')
+        host = get_host_connection_info(host_id)
+        hostname = host['ip_address']
+        port = host['ssh_port']
+        user = host['username']
+        pwd = host['password']
+        auth_method = host['auth_method']
+        private_key = host['private_key']
+        operating_system = host['operating_system']
+        requires_sudo = host['requires_sudo']
+        passwordless_sudo = host['passwordless_sudo']
+        sudo_password = host['sudo_password']
+
+        def run_cmd(command):
+            if auth_method == 'password':
+                return pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd, cmd=command,
+                                     needs_sudo=requires_sudo,
+                                     passwordless_sudo=passwordless_sudo,
+                                     sudo_password=sudo_password)
+            return sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key, cmd=command,
+                                    needs_sudo=requires_sudo,
+                                    passwordless_sudo=passwordless_sudo,
+                                    sudo_password=sudo_password)
+
+        iptables_output = run_cmd('iptables -D {} {}'.format(direction, rule_id))
+        if operating_system in ('centos', 'redhat'):
+            run_cmd('iptables-save > /etc/sysconfig/iptables')
+        elif operating_system in ('debian', 'ubuntu'):
+            run_cmd('iptables-save > /etc/iptables/rules.v4')
         data_list = get_rule(iptables_output)
         # 【修复】记录成功日志
         log_operation(
@@ -940,18 +706,18 @@ def hosts():
         if search_keyword:
             # 带搜索条件的查询
             cursor.execute('''
-            SELECT id, username, auth_method, host_name, host_identifier, ip_address, 
-                   operating_system, created_at, ssh_port
-            FROM hosts 
+            SELECT id, username, auth_method, host_name, host_identifier, ip_address,
+                   operating_system, created_at, ssh_port, requires_sudo, passwordless_sudo, sudo_password
+            FROM hosts
             WHERE host_name LIKE ? OR host_identifier LIKE ? OR ip_address LIKE ?
             ORDER BY created_at DESC
             ''', (f'%{search_keyword}%', f'%{search_keyword}%', f'%{search_keyword}%'))
         else:
             # 原有的无搜索条件查询
             cursor.execute('''
-            SELECT id, username, auth_method, host_name, host_identifier, ip_address, 
-                   operating_system, created_at, ssh_port
-            FROM hosts 
+            SELECT id, username, auth_method, host_name, host_identifier, ip_address,
+                   operating_system, created_at, ssh_port, requires_sudo, passwordless_sudo, sudo_password
+            FROM hosts
             ORDER BY created_at DESC
             ''')
 
@@ -970,7 +736,10 @@ def hosts():
                 'host_identifier': host['host_identifier'],
                 'ip_address': host['ip_address'],
                 'operating_system': host['operating_system'],
-                'created_at': host['created_at']
+                'created_at': host['created_at'],
+                'requires_sudo': bool(host['requires_sudo']) if host['requires_sudo'] is not None else False,
+                'passwordless_sudo': bool(host['passwordless_sudo']) if host['passwordless_sudo'] is not None else False,
+                'has_sudo_password': bool(host['sudo_password'])
             })
 
         # 计算总页数（考虑搜索结果）
@@ -1009,15 +778,24 @@ def add_host():
             if field not in data or not data[field]:
                 return jsonify({'success': False, 'message': f'缺少必填字段: {field}'}), 400
 
+        requires_sudo = 1 if data.get('requires_sudo') else 0
+        passwordless_sudo = 1 if data.get('passwordless_sudo') else 0
+        sudo_password = data.get('sudo_password') or None
+        if not requires_sudo:
+            passwordless_sudo = 0
+            sudo_password = None
+        elif not passwordless_sudo and not sudo_password:
+            return jsonify({'success': False, 'message': '需要sudo密码'}), 400
+
         db = get_db()
         cursor = db.cursor()
 
         # 插入主机数据
         cursor.execute('''
-        INSERT INTO hosts 
-        (host_name, host_identifier, ip_address, operating_system, ssh_port, 
-         username, auth_method, password, private_key, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO hosts
+        (host_name, host_identifier, ip_address, operating_system, ssh_port,
+         username, auth_method, password, private_key, requires_sudo, passwordless_sudo, sudo_password, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             data['host_name'],
             data['host_identifier'],
@@ -1028,6 +806,9 @@ def add_host():
             data.get('auth_method', 'password'),
             data.get('password', ''),
             data.get('private_key', ''),
+            requires_sudo,
+            passwordless_sudo,
+            sudo_password,
             datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         ))
@@ -1179,19 +960,41 @@ def update_host():
         db = get_db()
         cursor = db.cursor()
         # 【新增】获取主机原始信息用于日志
-        cursor.execute('SELECT host_name, ip_address FROM hosts WHERE id = ?', (host_id,))
+        cursor.execute('SELECT host_name, ip_address, sudo_password, requires_sudo, passwordless_sudo FROM hosts WHERE id = ?', (host_id,))
         host = cursor.fetchone()
         if not host:
             return jsonify({'success': False, 'message': '主机不存在'}), 404
         original_host_name = host['host_name']
         original_ip = host['ip_address']
+        existing_sudo_password = host['sudo_password']
+
+        password_value = data.get('password')
+        if password_value == '':
+            password_value = None
+        private_key_value = data.get('private_key') or ''
+
+        requires_sudo = 1 if data.get('requires_sudo') else 0
+        passwordless_sudo = 1 if data.get('passwordless_sudo') else 0
+        sudo_password_input = data.get('sudo_password') or None
+        if not requires_sudo:
+            passwordless_sudo = 0
+            sudo_password_to_save = None
+        elif passwordless_sudo:
+            sudo_password_to_save = None
+        else:
+            sudo_password_to_save = sudo_password_input or existing_sudo_password
+            if not sudo_password_to_save:
+                return jsonify({'success': False, 'message': '需要sudo密码'}), 400
+
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         # 不修改密码
-        if data['password'] is None and data['private_key'] == '':
+        if password_value is None and private_key_value == '':
             cursor.execute(
-                'UPDATE hosts SET host_name = ?, host_identifier = ?, ip_address = ?, operating_system = ?, ssh_port = ?, username = ?, updated_at = ? WHERE id = ?;',
+                'UPDATE hosts SET host_name = ?, host_identifier = ?, ip_address = ?, operating_system = ?, ssh_port = ?, username = ?, requires_sudo = ?, passwordless_sudo = ?, sudo_password = ?, updated_at = ? WHERE id = ?;',
                 (data['host_name'], data['host_identifier'], data['ip_address'], data['operating_system'],
-                 data['ssh_port'], data['username'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), host_id))
+                 data['ssh_port'], data['username'], requires_sudo, passwordless_sudo, sudo_password_to_save,
+                 timestamp, host_id))
             db.commit()
             if cursor.rowcount == 0:
                 return jsonify({'success': False, 'message': '主机不存在'}), 404
@@ -1199,10 +1002,10 @@ def update_host():
         # 修改密码
         else:
             cursor.execute(
-                'UPDATE hosts SET host_name = ?, host_identifier = ?, ip_address = ?, operating_system = ?, ssh_port = ?, username = ?, auth_method = ?, password = ?, private_key = ? ,updated_at = ? WHERE id = ?;',
+                'UPDATE hosts SET host_name = ?, host_identifier = ?, ip_address = ?, operating_system = ?, ssh_port = ?, username = ?, auth_method = ?, password = ?, private_key = ?, requires_sudo = ?, passwordless_sudo = ?, sudo_password = ?, updated_at = ? WHERE id = ?;',
                 (data['host_name'], data['host_identifier'], data['ip_address'], data['operating_system'],
-                 data['ssh_port'], data['username'], data['auth_method'], data['password'], data['private_key'],
-                 datetime.now().strftime('%Y-%m-%d %H:%M:%S'), host_id))
+                 data['ssh_port'], data['username'], data['auth_method'], password_value or '', private_key_value,
+                 requires_sudo, passwordless_sudo, sudo_password_to_save, timestamp, host_id))
             db.commit()
         # 【修复】记录成功日志
         log_operation(
@@ -1222,7 +1025,9 @@ def update_host():
                     "ip_address": data['ip_address'],
                     "ssh_port": data['ssh_port'],
                     "operating_system": data['operating_system'],
-                    "auth_method": data.get('auth_method')
+                    "auth_method": data.get('auth_method'),
+                    "requires_sudo": bool(requires_sudo),
+                    "passwordless_sudo": bool(passwordless_sudo)
                 },
                 "operation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }),
@@ -1774,49 +1579,35 @@ def temp_to_hosts():
                 cmd_list.append(cmd)
         # 获取主机的信息
         for host_id in host_ids_list:
-            # 查询所有主机数据
-            cursor.execute('''
-            SELECT ssh_port, username, ip_address, auth_method, password, private_key, operating_system
-            FROM hosts where id = {}
-            '''.format(host_id))
-            # 获取所有记录
-            # 1. 获取所有列名（从 cursor.description 中提取）
-            columns = [column[0] for column in cursor.description]
-            # 2. 将每行数据与列名配对，转换为字典
-            hosts = [dict(zip(columns, row)) for row in cursor.fetchall()]
-            hostname = hosts[0]['ip_address']
-            port = hosts[0]['ssh_port']
-            user = hosts[0]['username']
-            pwd = hosts[0]['password']
-            auth_method = hosts[0]['auth_method']
-            private_key = hosts[0]['private_key']
-            operating_system = hosts[0]['operating_system']
-            if auth_method == 'password':
-                for cmd in cmd_list:
-                    pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                                  cmd=cmd)
-                    if operating_system == 'centos' or operating_system == 'redhat':
-                        pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                                      cmd='iptables-save > /etc/sysconfig/iptables')
-                    elif operating_system == 'debian':
-                        pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                                      cmd='iptables-save > /etc/iptables/rules.v4')
-                    elif operating_system == 'ubuntu':
-                        pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
-                                      cmd='iptables-save > /etc/iptables/rules.v4')
-            else:
-                for cmd in cmd_list:
-                    sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                     cmd=cmd)
-                    if operating_system == 'centos' or operating_system == 'redhat':
-                        sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                         cmd='iptables-save > /etc/sysconfig/iptables')
-                    elif operating_system == 'debian':
-                        sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                         cmd='iptables-save > /etc/iptables/rules.v4')
-                    elif operating_system == 'ubuntu':
-                        sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
-                                         cmd='iptables-save > /etc/iptables/rules.v4')
+            host = get_host_connection_info(int(host_id))
+            hostname = host['ip_address']
+            port = host['ssh_port']
+            user = host['username']
+            pwd = host['password']
+            auth_method = host['auth_method']
+            private_key = host['private_key']
+            operating_system = host['operating_system']
+            requires_sudo = host['requires_sudo']
+            passwordless_sudo = host['passwordless_sudo']
+            sudo_password = host['sudo_password']
+
+            def run_cmd(command):
+                if auth_method == 'password':
+                    return pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd, cmd=command,
+                                         needs_sudo=requires_sudo,
+                                         passwordless_sudo=passwordless_sudo,
+                                         sudo_password=sudo_password)
+                return sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key, cmd=command,
+                                         needs_sudo=requires_sudo,
+                                         passwordless_sudo=passwordless_sudo,
+                                         sudo_password=sudo_password)
+
+            for cmd in cmd_list:
+                run_cmd(cmd)
+                if operating_system in ('centos', 'redhat'):
+                    run_cmd('iptables-save > /etc/sysconfig/iptables')
+                elif operating_system in ('debian', 'ubuntu'):
+                    run_cmd('iptables-save > /etc/iptables/rules.v4')
 
         # 【修复】记录成功日志
         log_operation(

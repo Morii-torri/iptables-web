@@ -36,6 +36,9 @@ def create_hosts_table(conn):
             auth_method TEXT NOT NULL,         -- 认证方式：password或key
             password TEXT,                     -- 密码，当auth_method为password时使用
             private_key TEXT,                  -- 私钥，当auth_method为key时使用
+            requires_sudo INTEGER DEFAULT 0,   -- 是否需要sudo提升权限
+            passwordless_sudo INTEGER DEFAULT 0, -- 是否免密sudo
+            sudo_password TEXT,                -- sudo密码（当需要sudo且非免密时）
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );

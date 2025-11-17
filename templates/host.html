@@ -177,7 +177,10 @@
                     data-os="{{ host.operating_system }}"
                     data-ssh-port="{{ host.ssh_port|default(22) }}"
                     data-auth-username="{{ host.username|default('') }}"
-                    data-auth-method="{{ host.auth_method|default('password') }}">
+                    data-auth-method="{{ host.auth_method|default('password') }}"
+                    data-requires-sudo="{{ 1 if host.requires_sudo else 0 }}"
+                    data-passwordless-sudo="{{ 1 if host.passwordless_sudo else 0 }}"
+                    data-has-sudo-password="{{ 1 if host.has_sudo_password else 0 }}">
                   <!-- 所有td都在tr内部 -->
                   <td class="px-6 py-4 whitespace-nowrap">
                     <div class="flex items-center">
@@ -311,6 +314,27 @@
                 <div id="key-field" class="md:col-span-2 hidden">
                   <label for="auth-key" class="block text-sm font-medium text-gray-700 mb-1">SSH密钥</label>
                   <textarea id="auth-key" name="auth-key" rows="4" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="私钥内容"></textarea>
+                </div>
+              </div>
+            </div>
+
+            <div class="md:col-span-2 bg-gray-50 p-4 rounded-lg">
+              <h4 class="font-medium mb-2">sudo 设置</h4>
+              <div class="space-y-3">
+                <label class="flex items-center space-x-2 text-sm text-gray-700">
+                  <input type="checkbox" id="requires-sudo" class="form-checkbox">
+                  <span>iptables 命令需要 sudo 权限</span>
+                </label>
+                <div id="sudo-options" class="space-y-3 hidden">
+                  <label class="flex items-center space-x-2 text-sm text-gray-700">
+                    <input type="checkbox" id="passwordless-sudo" class="form-checkbox">
+                    <span>主机已配置免密码 sudo</span>
+                  </label>
+                </div>
+                <div id="sudo-password-field" class="hidden">
+                  <label for="sudo-password" class="block text-sm font-medium text-gray-700 mb-1">sudo 密码</label>
+                  <input type="password" id="sudo-password" name="sudo-password" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="请输入sudo密码">
+                  <p class="text-xs text-gray-500 mt-1">编辑主机时留空将保留原sudo密码。</p>
                 </div>
               </div>
             </div>
@@ -493,6 +517,32 @@ if (clearSearchBtn) {
   const authMethod = document.getElementById('auth-method');
   const passwordField = document.getElementById('password-field');
   const keyField = document.getElementById('key-field');
+  const requiresSudoCheckbox = document.getElementById('requires-sudo');
+  const passwordlessSudoCheckbox = document.getElementById('passwordless-sudo');
+  const sudoOptions = document.getElementById('sudo-options');
+  const sudoPasswordField = document.getElementById('sudo-password-field');
+  const sudoPasswordInput = document.getElementById('sudo-password');
+
+  const toggleSudoFields = () => {
+    if (requiresSudoCheckbox.checked) {
+      sudoOptions.classList.remove('hidden');
+      if (passwordlessSudoCheckbox.checked) {
+        sudoPasswordField.classList.add('hidden');
+        sudoPasswordInput.value = '';
+      } else {
+        sudoPasswordField.classList.remove('hidden');
+      }
+    } else {
+      sudoOptions.classList.add('hidden');
+      sudoPasswordField.classList.add('hidden');
+      passwordlessSudoCheckbox.checked = false;
+      sudoPasswordInput.value = '';
+    }
+  };
+
+  requiresSudoCheckbox.addEventListener('change', toggleSudoFields);
+  passwordlessSudoCheckbox.addEventListener('change', toggleSudoFields);
+  toggleSudoFields();
 
   authMethod.addEventListener('change', () => {
     if (authMethod.value === 'password') {
@@ -519,6 +569,11 @@ if (clearSearchBtn) {
     document.getElementById('host-form').reset();
     passwordField.classList.remove('hidden');
     keyField.classList.add('hidden');
+    requiresSudoCheckbox.checked = false;
+    passwordlessSudoCheckbox.checked = false;
+    sudoPasswordInput.value = '';
+    sudoPasswordInput.placeholder = '请输入sudo密码';
+    toggleSudoFields();
     modal.classList.remove('hidden');
     // 显示模态框时添加动画效果
     setTimeout(() => {
@@ -584,7 +639,12 @@ saveBtn.addEventListener('click', () => {
       : null,
     private_key: document.getElementById('auth-method').value === 'key'
       ? document.getElementById('auth-key').value
-      : null
+      : null,
+    requires_sudo: requiresSudoCheckbox.checked,
+    passwordless_sudo: passwordlessSudoCheckbox.checked,
+    sudo_password: (!requiresSudoCheckbox.checked || passwordlessSudoCheckbox.checked)
+      ? null
+      : (sudoPasswordInput.value || null)
   };
 
   // 简单验证
@@ -657,6 +717,15 @@ document.querySelectorAll('button:has(.fa-pencil)').forEach(btn => {
       passwordField.classList.add('hidden');
       keyField.classList.remove('hidden');
     }
+
+    const requiresSudo = hostData.requiresSudo === '1' || hostData.requiresSudo === 'true';
+    const passwordlessSudo = hostData.passwordlessSudo === '1' || hostData.passwordlessSudo === 'true';
+    const hasSudoPassword = hostData.hasSudoPassword === '1' || hostData.hasSudoPassword === 'true';
+    requiresSudoCheckbox.checked = requiresSudo;
+    passwordlessSudoCheckbox.checked = requiresSudo && passwordlessSudo;
+    sudoPasswordInput.value = '';
+    sudoPasswordInput.placeholder = hasSudoPassword ? '留空保留原sudo密码' : '请输入sudo密码';
+    toggleSudoFields();
 
     // 4. 显示模态框
     modal.classList.remove('hidden');
