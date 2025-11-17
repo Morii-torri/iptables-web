@@ -95,6 +95,236 @@ scheduler.add_job(
 )
 scheduler.start()
 
+DEFAULT_HOST_GROUP_NAME = '未分组'
+DEFAULT_HOST_GROUP_COLOR = '#6b7280'
+DEFAULT_TEMPLATE_GROUP_COLOR = '#6366f1'
+
+
+def current_timestamp():
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+def normalize_limit_value(limit_value):
+    if limit_value is None:
+        return ''
+    text = str(limit_value).strip()
+    return re.sub(r'(?i)(kb/s|mb/s|gb/s)$', '', text)
+
+
+def build_rule_signature(rule_data):
+    """为主机规则生成唯一签名"""
+    return '|'.join([
+        str(rule_data.get('target', '')).strip(),
+        str(rule_data.get('prot') or rule_data.get('protocol', '')).strip(),
+        str(rule_data.get('source') or rule_data.get('auth_object', '')).strip(),
+        str(rule_data.get('destination', '')).strip(),
+        str(rule_data.get('port', '')).strip(),
+        str(rule_data.get('comment') or rule_data.get('description', '')).strip(),
+        normalize_limit_value(rule_data.get('limit'))
+    ])
+
+
+def ensure_host_group(cursor, host_id, group_name, label_color=None, template_group_id=None, is_default=0):
+    """确保主机分组存在"""
+    cursor.execute(
+        'SELECT id, label_color, template_group_id FROM host_rule_groups WHERE host_id = ? AND group_name = ?',
+        (host_id, group_name)
+    )
+    existing = cursor.fetchone()
+    now = current_timestamp()
+    color = label_color or DEFAULT_HOST_GROUP_COLOR
+    if existing:
+        needs_update = False
+        update_params = []
+        if template_group_id and existing['template_group_id'] != template_group_id:
+            needs_update = True
+        if existing['label_color'] != color:
+            needs_update = True
+        if needs_update:
+            cursor.execute(
+                'UPDATE host_rule_groups SET label_color = ?, template_group_id = ?, updated_at = ? WHERE id = ?',
+                (color, template_group_id, now, existing['id'])
+            )
+        return existing['id']
+
+    cursor.execute(
+        '''
+        INSERT INTO host_rule_groups
+        (host_id, group_name, label_color, template_group_id, is_default, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (host_id, group_name, color, template_group_id, is_default, now, now)
+    )
+    return cursor.lastrowid
+
+
+def ensure_default_host_group(cursor, host_id):
+    cursor.execute(
+        'SELECT id, group_name, label_color FROM host_rule_groups WHERE host_id = ? AND is_default = 1',
+        (host_id,)
+    )
+    group_row = cursor.fetchone()
+    if group_row:
+        return group_row
+    group_id = ensure_host_group(cursor, host_id, DEFAULT_HOST_GROUP_NAME, DEFAULT_HOST_GROUP_COLOR, None, 1)
+    return {'id': group_id, 'group_name': DEFAULT_HOST_GROUP_NAME, 'label_color': DEFAULT_HOST_GROUP_COLOR}
+
+
+def fetch_host_groups(host_id):
+    db = get_db()
+    cursor = db.cursor()
+    default_group = ensure_default_host_group(cursor, host_id)
+    cursor.execute(
+        'SELECT id, group_name, label_color, is_default FROM host_rule_groups WHERE host_id = ? ORDER BY is_default DESC, group_name',
+        (host_id,)
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        rows = [default_group]
+    db.commit()
+    result = []
+    for row in rows:
+        if isinstance(row, sqlite3.Row):
+            result.append(dict(row))
+        else:
+            result.append(row)
+    return result
+
+
+def sync_host_rules(host_id, direction, parsed_rules):
+    """同步主机规则信息到数据库"""
+    db = get_db()
+    cursor = db.cursor()
+    default_group = ensure_default_host_group(cursor, host_id)
+    cursor.execute(
+        'SELECT id, signature FROM host_rules WHERE host_id = ? AND direction = ?',
+        (host_id, direction)
+    )
+    existing_rows = cursor.fetchall()
+    existing_map = {row['signature']: row['id'] for row in existing_rows}
+    seen_signatures = set()
+    now = current_timestamp()
+    for rule in parsed_rules:
+        signature = build_rule_signature(rule)
+        seen_signatures.add(signature)
+        cursor.execute(
+            '''
+            SELECT hr.id, hr.host_group_id, hrg.group_name, hrg.label_color
+            FROM host_rules hr
+            LEFT JOIN host_rule_groups hrg ON hr.host_group_id = hrg.id
+            WHERE hr.host_id = ? AND hr.direction = ? AND hr.signature = ?
+            ''',
+            (host_id, direction, signature)
+        )
+        record = cursor.fetchone()
+        if record:
+            group_name = record['group_name'] or default_group['group_name']
+            group_color = record['label_color'] or default_group['label_color']
+            host_group_id = record['host_group_id'] or default_group['id']
+            if not record['host_group_id']:
+                cursor.execute(
+                    'UPDATE host_rules SET host_group_id = ?, updated_at = ? WHERE id = ?',
+                    (host_group_id, now, record['id'])
+                )
+            rule['group_name'] = group_name
+            rule['group_color'] = group_color
+            rule['host_rule_id'] = record['id']
+            rule['host_group_id'] = host_group_id
+        else:
+            cursor.execute(
+                '''
+                INSERT INTO host_rules
+                (host_id, direction, target, protocol, port, auth_object, description, limit, signature, template_rule_id, host_group_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+                ''',
+                (
+                    host_id,
+                    direction,
+                    rule.get('target'),
+                    rule.get('prot'),
+                    rule.get('port'),
+                    rule.get('source'),
+                    rule.get('comment'),
+                    normalize_limit_value(rule.get('limit')),
+                    signature,
+                    default_group['id'],
+                    now,
+                    now
+                )
+            )
+            new_id = cursor.lastrowid
+            rule['group_name'] = default_group['group_name']
+            rule['group_color'] = default_group['label_color']
+            rule['host_rule_id'] = new_id
+            rule['host_group_id'] = default_group['id']
+    # 删除已不存在的规则
+    stale = set(existing_map.keys()) - seen_signatures
+    if stale:
+        placeholders = ','.join('?' for _ in stale)
+        sql = f'DELETE FROM host_rules WHERE host_id = ? AND direction = ? AND signature IN ({placeholders})'
+        params = [host_id, direction]
+        params.extend(stale)
+        cursor.execute(sql, params)
+    db.commit()
+
+
+def render_host_rule_view(host_id, direction, data_list):
+    sync_host_rules(host_id, direction, data_list)
+    host_groups = fetch_host_groups(host_id)
+    return render_template('rule.html', data_list=data_list, id=host_id, host_groups=host_groups)
+
+
+def persist_host_rule_metadata(cursor, host_id, direction, rule_meta, template_groups_map):
+    """保存模板规则与主机的关联信息"""
+    group_name = rule_meta.get('group_name') or DEFAULT_HOST_GROUP_NAME
+    template_group = template_groups_map.get(group_name)
+    label_color = template_group['label_color'] if template_group else DEFAULT_HOST_GROUP_COLOR
+    template_group_id = template_group['id'] if template_group else None
+    host_group_id = ensure_host_group(cursor, host_id, group_name, label_color, template_group_id, 1 if not template_group else 0)
+    now = current_timestamp()
+    limit_value = normalize_limit_value(rule_meta.get('limit'))
+    signature = build_rule_signature({
+        'target': rule_meta.get('policy'),
+        'prot': rule_meta.get('protocol'),
+        'source': rule_meta.get('auth_object'),
+        'destination': '',
+        'port': rule_meta.get('port'),
+        'comment': rule_meta.get('description'),
+        'limit': limit_value
+    })
+    cursor.execute(
+        '''
+        INSERT INTO host_rules
+        (host_id, direction, target, protocol, port, auth_object, description, limit, signature, template_rule_id, host_group_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(host_id, direction, signature) DO UPDATE SET
+            target=excluded.target,
+            protocol=excluded.protocol,
+            port=excluded.port,
+            auth_object=excluded.auth_object,
+            description=excluded.description,
+            limit=excluded.limit,
+            template_rule_id=excluded.template_rule_id,
+            host_group_id=excluded.host_group_id,
+            updated_at=excluded.updated_at
+        ''',
+        (
+            host_id,
+            direction,
+            rule_meta.get('policy'),
+            rule_meta.get('protocol'),
+            rule_meta.get('port'),
+            rule_meta.get('auth_object'),
+            rule_meta.get('description'),
+            limit_value,
+            signature,
+            rule_meta.get('rule_id'),
+            host_group_id,
+            now,
+            now
+        )
+    )
+
 
 def permission_required(permission_code):
     """权限检查装饰器"""
@@ -346,7 +576,7 @@ def rules_in():
             iptables_output = sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
                                                cmd='iptables -nL INPUT --line-number -t filter')
         data_list = get_rule(iptables_output)
-        return render_template('rule.html', data_list=data_list, id=host_id)
+        return render_host_rule_view(host_id, 'INPUT', data_list)
     except Exception as e:
         # 错误处理
         return f"获取主机数据失败: {str(e)}", 500
@@ -384,10 +614,38 @@ def rules_out():
             iptables_output = sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
                                                cmd='iptables -nL OUTPUT --line-number -t filter')
         data_list = get_rule(iptables_output)
-        return render_template('rule.html', data_list=data_list, id=host_id)
+        return render_host_rule_view(host_id, 'OUTPUT', data_list)
     except Exception as e:
         # 错误处理
         return f"获取主机数据失败: {str(e)}", 500
+
+
+@app.route('/host_rules/<int:host_rule_id>/group', methods=['POST'])
+@login_required
+@permission_required('iptab_edit')
+def update_host_rule_group(host_rule_id):
+    data = request.get_json() or {}
+    host_id = data.get('host_id')
+    group_id = data.get('group_id')
+    if not group_id:
+        return jsonify({'success': False, 'message': '缺少分组信息'}), 400
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT host_id FROM host_rules WHERE id = ?', (host_rule_id,))
+    rule_row = cursor.fetchone()
+    if not rule_row:
+        return jsonify({'success': False, 'message': '规则不存在'}), 404
+    if host_id and int(host_id) != rule_row['host_id']:
+        return jsonify({'success': False, 'message': '主机信息不匹配'}), 400
+    cursor.execute('SELECT id, group_name, label_color FROM host_rule_groups WHERE id = ? AND host_id = ?',
+                   (group_id, rule_row['host_id']))
+    group_row = cursor.fetchone()
+    if not group_row:
+        return jsonify({'success': False, 'message': '分组不存在'}), 404
+    cursor.execute('UPDATE host_rules SET host_group_id = ?, updated_at = ? WHERE id = ?',
+                   (group_row['id'], current_timestamp(), host_rule_id))
+    db.commit()
+    return jsonify({'success': True, 'data': {'group_name': group_row['group_name'], 'label_color': group_row['label_color']}})
 
 
 # 修改规则
@@ -398,7 +656,7 @@ def rules_update():
     all_params = request.get_json()
     host_id = all_params['host_id']
     rule_id = all_params['rule_id']
-    direction = all_params['direction']
+    direction = all_params['direction'].upper()
     # 获取规则的具体数据
     try:
         # 获取数据库连接
@@ -591,7 +849,7 @@ def rules_update():
             iptables_output = sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
                                                cmd='iptables -nL {} --line-number -t filter'.format(direction))
         data_list = get_rule(iptables_output)
-        return render_template('rule.html', data_list=data_list, id=host_id)
+        return render_host_rule_view(host_id, direction, data_list)
     except Exception as e:
         # 错误处理
         return f"获取主机数据失败: {str(e)}", 500
@@ -606,7 +864,7 @@ def rules_add():
     print(all_params)
     host_id = all_params['host_id']
     rule_id = all_params['rule_id']
-    direction = all_params['direction']
+    direction = all_params['direction'].upper()
     # 获取规则的具体数据
     try:
         # 获取数据库连接
@@ -802,7 +1060,7 @@ def rules_add():
         )
 
         data_list = get_rule(iptables_output)
-        return render_template('rule.html', data_list=data_list, id=host_id)
+        return render_host_rule_view(host_id, direction, data_list)
     except Exception as e:
         # 【修复】记录失败日志
         log_operation(
@@ -834,7 +1092,7 @@ def del_rule():
     all_params = dict(request.args)
     host_id = all_params['host_id']
     rule_id = all_params['rule_id']
-    direction = all_params['direction']
+    direction = all_params['direction'].upper()
     try:
         db = get_db()
         cursor = db.cursor()
@@ -896,7 +1154,7 @@ def del_rule():
             }),
             success=1
         )
-        return render_template('rule.html', data_list=data_list, id=host_id)
+        return render_host_rule_view(host_id, direction, data_list)
     except Exception as e:
         # 【修复】记录失败日志
         log_operation(
@@ -1281,6 +1539,10 @@ def templates():
 
             cursor.execute('SELECT * FROM rules where template_id="{}" ;'.format(template_id))
             rules_data = cursor.fetchall()
+            cursor.execute('SELECT id, group_name, label_color FROM rule_groups WHERE template_id = ? ORDER BY id ASC',
+                           (template_id,))
+            group_rows = cursor.fetchall()
+            groups = [dict(row) for row in group_rows]
 
             # 这个循环是rule的规则内容了
             data_list = []
@@ -1296,6 +1558,7 @@ def templates():
                     'created_at': rule['created_at'],
                     'updated_at': rule['updated_at'],
                     'limit': rule['limit'],
+                    'group_name': rule['group_name'],
                 })
 
             temp_info.append({'template_id': template_id,
@@ -1304,6 +1567,7 @@ def templates():
                               'template_identifier': res['template_identifier'],
                               'updated_at': res['updated_at'],
                               'rules': data_list,
+                              'groups': groups,
                               })
             # print(temp_info)
 
@@ -1336,16 +1600,17 @@ def templates_add():
         db = get_db()
         cursor = db.cursor()
         # 插入主机数据
+        now_ts = current_timestamp()
         cursor.execute('''
-        INSERT INTO templates 
+        INSERT INTO templates
         (template_name, template_identifier, direction,created_at, updated_at)
         VALUES (?, ?, ?, ?,?)
         ''', (
             data['name'],
             data['description'],
             data['direction'],
-            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            now_ts,
+            now_ts
         ))
         # 查询templat_id
         cursor.execute('SELECT id FROM templates ORDER BY id DESC LIMIT 1;')
@@ -1357,15 +1622,30 @@ def templates_add():
             # 表中没有数据时返回 None 或提示
             template_id = 1
 
+        groups_payload = data.get('groups') or []
+        if not groups_payload:
+            groups_payload = [{'group_name': '默认分组', 'label_color': DEFAULT_TEMPLATE_GROUP_COLOR}]
+        for group in groups_payload:
+            cursor.execute('''
+            INSERT INTO rule_groups (template_id, group_name, label_color, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ''', (
+                template_id,
+                group.get('group_name') or '默认分组',
+                group.get('label_color') or DEFAULT_TEMPLATE_GROUP_COLOR,
+                now_ts,
+                now_ts
+            ))
+
         for rule in data['rules']:
             if rule['policy'] == '允许':
                 policy = 'ACCEPT'
             else:
                 policy = 'DROP'
             cursor.execute('''
-            INSERT INTO rules 
-            (template_id, policy, protocol, port, auth_object, description, created_at, updated_at, "limit")
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO rules
+            (template_id, policy, protocol, port, auth_object, description, created_at, updated_at, "limit", group_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 template_id,
                 policy,
@@ -1373,42 +1653,44 @@ def templates_add():
                 rule['port'],
                 rule['auth_object'],
                 rule['description'],
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                rule['limit']
+                now_ts,
+                now_ts,
+                rule['limit'],
+                rule.get('group_name') or groups_payload[0].get('group_name') or '默认分组'
             ))
 
-            # 获取规则数量用于日志
-            rule_count = len(data['rules'])
+        db.commit()
 
-            db.commit()
-            # 【修复】记录成功日志
-            log_operation(
-                user_id=current_user.id,
-                username=current_user.username,
-                operation_type='添加',
-                operation_object='模板',
-                operation_summary=f"添加模板: {data['name']} (规则数: {rule_count})",
-                operation_details=json.dumps({
-                    "template_id": template_id,
-                    "template_name": data['name'],
-                    "direction": data['direction'],
-                    "description": data['description'],
-                    "rule_count": rule_count,
-                    "rules": [
-                        {
-                            "protocol": rule['protocol'],
-                            "port": rule['port'],
-                            "policy": "允许" if rule['policy'] == 'ACCEPT' else "拒绝",
-                            "source": rule['auth_object'],
-                            "description": rule['description'],
-                            "limit": rule['limit']
-                        } for rule in data['rules']
-                    ],
-                    "operation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                }),
-                success=1
-            )
+        # 获取规则数量用于日志
+        rule_count = len(data['rules'])
+
+        # 【修复】记录成功日志
+        log_operation(
+            user_id=current_user.id,
+            username=current_user.username,
+            operation_type='添加',
+            operation_object='模板',
+            operation_summary=f"添加模板: {data['name']} (规则数: {rule_count})",
+            operation_details=json.dumps({
+                "template_id": template_id,
+                "template_name": data['name'],
+                "direction": data['direction'],
+                "description": data['description'],
+                "rule_count": rule_count,
+                "rules": [
+                    {
+                        "protocol": rule['protocol'],
+                        "port": rule['port'],
+                        "policy": "允许" if rule['policy'] == 'ACCEPT' else "拒绝",
+                        "source": rule['auth_object'],
+                        "description": rule['description'],
+                        "limit": rule['limit']
+                    } for rule in data['rules']
+                ],
+                "operation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }),
+            success=1
+        )
         return jsonify({'success': True, 'message': '模板添加成功'})
 
     except sqlite3.IntegrityError:
@@ -1538,6 +1820,38 @@ def templates_edit():
         old_rule_count = cursor.fetchone()['old_count']
         new_rule_count = len(data['rules'])
 
+        now_ts = current_timestamp()
+        groups_payload = data.get('groups') or []
+        if not groups_payload:
+            groups_payload = [{'group_name': '默认分组', 'label_color': DEFAULT_TEMPLATE_GROUP_COLOR}]
+
+        cursor.execute('SELECT id FROM rule_groups WHERE template_id = ?', (data['temp_id'],))
+        existing_group_ids = {row['id'] for row in cursor.fetchall()}
+        payload_group_ids = {grp.get('id') for grp in groups_payload if grp.get('id')}
+        to_remove = existing_group_ids - payload_group_ids
+        if to_remove:
+            placeholders = ','.join('?' for _ in to_remove)
+            cursor.execute(f'DELETE FROM rule_groups WHERE id IN ({placeholders})', tuple(to_remove))
+            cursor.execute(f'UPDATE host_rule_groups SET template_group_id = NULL WHERE template_group_id IN ({placeholders})',
+                           tuple(to_remove))
+
+        for group in groups_payload:
+            color = group.get('label_color') or DEFAULT_TEMPLATE_GROUP_COLOR
+            if group.get('id'):
+                cursor.execute(
+                    'UPDATE rule_groups SET group_name = ?, label_color = ?, updated_at = ? WHERE id = ?',
+                    (group.get('group_name') or '默认分组', color, now_ts, group['id'])
+                )
+                cursor.execute(
+                    'UPDATE host_rule_groups SET group_name = ?, label_color = ?, updated_at = ? WHERE template_group_id = ?',
+                    (group.get('group_name') or '默认分组', color, now_ts, group['id'])
+                )
+            else:
+                cursor.execute(
+                    'INSERT INTO rule_groups (template_id, group_name, label_color, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+                    (data['temp_id'], group.get('group_name') or '默认分组', color, now_ts, now_ts)
+                )
+
         # 修改模板信息
         cursor.execute('''
         UPDATE  templates set template_name = ?, template_identifier = ?, direction = ?, updated_at =? WHERE id = ?;
@@ -1545,13 +1859,11 @@ def templates_edit():
             data['name'],
             data['description'],
             data['direction'],
-            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            now_ts,
             data['temp_id']
         ))
         # 先删除旧规则
         cursor.execute('DELETE FROM rules WHERE template_id = ?', (data['temp_id'],))
-        rule_count = 0
-
         for rule in data['rules']:
             if rule['policy'] == '允许' or rule['policy'] == 'ACCEPT':
                 policy = 'ACCEPT'
@@ -1559,9 +1871,9 @@ def templates_edit():
                 policy = 'DROP'
             # 添加新规则
             cursor.execute('''
-            INSERT INTO rules 
-            (template_id, policy, protocol, port, auth_object, description, created_at, updated_at, "limit")
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO rules
+            (template_id, policy, protocol, port, auth_object, description, created_at, updated_at, "limit", group_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 data['temp_id'],
                 policy,
@@ -1569,12 +1881,12 @@ def templates_edit():
                 rule['port'],
                 rule['auth_object'],
                 rule['description'],
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                rule.get('limit', '')  # 添加limit字段
+                now_ts,
+                now_ts,
+                rule.get('limit', ''),
+                rule.get('group_name') or groups_payload[0].get('group_name') or '默认分组'
             ))
-            rule_count += 1
-            db.commit()
+        db.commit()
         # 【修复】记录成功日志
         log_operation(
             user_id=current_user.id,
@@ -1701,13 +2013,25 @@ def temp_to_hosts():
         direction_data = cursor.fetchone()
         direction = direction_data[0]
         # 查询所有主机数据
+        cursor.execute('SELECT id, group_name, label_color FROM rule_groups WHERE template_id = ?', (template_id,))
+        template_groups_map = {row['group_name']: dict(row) for row in cursor.fetchall()}
         cursor.execute('''SELECT * FROM  rules
         where template_id = {}
         '''.format(template_id))
         # 获取所有记录
         temp_data = cursor.fetchall()
-        cmd_list = []
+        prepared_rules = []
         for rule in temp_data:
+            rule_meta = {
+                'rule_id': rule['id'],
+                'policy': rule['policy'],
+                'protocol': rule['protocol'],
+                'port': rule['port'],
+                'auth_object': rule['auth_object'],
+                'description': rule['description'],
+                'limit': rule['limit'],
+                'group_name': rule['group_name'] or '默认分组'
+            }
             # 正常的tcp或udp规则
             if 'tcp' in rule['protocol'].lower() or 'udp' in rule['protocol'].lower():
                 # 正常的端口
@@ -1723,7 +2047,7 @@ def temp_to_hosts():
                             cmd = 'iptables -A {}  -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
                                 direction, rule['auth_object'], rule['protocol'], new_port,
                                 rule['policy'], rule['limit'], random_name(), rule['description'])
-                        cmd_list.append(cmd)
+                        prepared_rules.append({'command': cmd, 'metadata': rule_meta})
                     # 添加规则中的: 正常端口中的多个端口
                     elif ',' in rule['port']:
                         if rule['limit'] == '':
@@ -1736,7 +2060,7 @@ def temp_to_hosts():
                                 direction, rule['auth_object'], rule['protocol'],
                                 rule['port'],
                                 rule['policy'], rule['limit'], random_name(), rule['description'])
-                        cmd_list.append(cmd)
+                        prepared_rules.append({'command': cmd, 'metadata': rule_meta})
                     else:
                         if rule['limit'] == '':
                             cmd = 'iptables -A {}  -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
@@ -1748,7 +2072,7 @@ def temp_to_hosts():
                                 direction, rule['auth_object'], rule['protocol'],
                                 rule['port'],
                                 rule['policy'], rule['limit'], random_name(), rule['description'])
-                        cmd_list.append(cmd)
+                        prepared_rules.append({'command': cmd, 'metadata': rule_meta})
                 else:
                     if rule['limit'] == '':
                         # tcp 或udp的所有端口
@@ -1760,7 +2084,7 @@ def temp_to_hosts():
                         cmd = 'iptables -A {} -s {} -p {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}"'.format(
                             direction, rule['auth_object'], rule['protocol'],
                             rule['policy'], rule['limit'], random_name(), rule['description'])
-                    cmd_list.append(cmd)
+                    prepared_rules.append({'command': cmd, 'metadata': rule_meta})
             # ICMP 或 all 协议的规则
             else:
                 if rule['limit'] == '':
@@ -1771,7 +2095,7 @@ def temp_to_hosts():
                     cmd = 'iptables -A {}  -s {} -p {}  -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}"'.format(
                         direction, rule['auth_object'], rule['protocol'],
                         rule['policy'], rule['limit'], random_name(), rule['description'])
-                cmd_list.append(cmd)
+                prepared_rules.append({'command': cmd, 'metadata': rule_meta})
         # 获取主机的信息
         for host_id in host_ids_list:
             # 查询所有主机数据
@@ -1792,7 +2116,8 @@ def temp_to_hosts():
             private_key = hosts[0]['private_key']
             operating_system = hosts[0]['operating_system']
             if auth_method == 'password':
-                for cmd in cmd_list:
+                for entry in prepared_rules:
+                    cmd = entry['command']
                     pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
                                   cmd=cmd)
                     if operating_system == 'centos' or operating_system == 'redhat':
@@ -1804,8 +2129,10 @@ def temp_to_hosts():
                     elif operating_system == 'ubuntu':
                         pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd,
                                       cmd='iptables-save > /etc/iptables/rules.v4')
+                    persist_host_rule_metadata(cursor, host_id, direction, entry['metadata'], template_groups_map)
             else:
-                for cmd in cmd_list:
+                for entry in prepared_rules:
+                    cmd = entry['command']
                     sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
                                      cmd=cmd)
                     if operating_system == 'centos' or operating_system == 'redhat':
@@ -1817,7 +2144,9 @@ def temp_to_hosts():
                     elif operating_system == 'ubuntu':
                         sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key,
                                          cmd='iptables-save > /etc/iptables/rules.v4')
+                    persist_host_rule_metadata(cursor, host_id, direction, entry['metadata'], template_groups_map)
 
+        db.commit()
         # 【修复】记录成功日志
         log_operation(
             user_id=current_user.id,
@@ -1833,7 +2162,7 @@ def temp_to_hosts():
                     {"host_id": hid, "host_name": host_names.get(hid, "未知主机")}
                     for hid in host_ids_list
                 ],
-                "applied_rules": len(cmd_list),
+                "applied_rules": len(prepared_rules),
                 "operation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }),
             success=1

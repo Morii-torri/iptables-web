@@ -80,6 +80,7 @@ def create_rule_table(conn):
             auth_object TEXT DEFAULT '0.0.0.0/0',        -- 授权对象
             description TEXT ,        -- 注释
             limit TEXT ,        -- 限流
+            group_name TEXT,          -- 规则所属分组
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -87,6 +88,79 @@ def create_rule_table(conn):
         cursor = conn.cursor()
         cursor.execute(sql_create_hosts_table)
         print("规则表创建成功")
+    except Error as e:
+        print(f"创建表时出错: {e}")
+
+
+def create_rule_groups_table(conn):
+    """创建模板规则分组表"""
+    try:
+        sql_create_rule_groups_table = """
+        CREATE TABLE IF NOT EXISTS rule_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            template_id INTEGER NOT NULL,
+            group_name TEXT NOT NULL,
+            label_color TEXT DEFAULT '#6366f1',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(template_id, group_name)
+        );
+        """
+        cursor = conn.cursor()
+        cursor.execute(sql_create_rule_groups_table)
+        print("模板规则分组表创建成功")
+    except Error as e:
+        print(f"创建表时出错: {e}")
+
+
+def create_host_rule_groups_table(conn):
+    """创建主机规则分组表"""
+    try:
+        sql_create_host_rule_groups_table = """
+        CREATE TABLE IF NOT EXISTS host_rule_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            host_id INTEGER NOT NULL,
+            group_name TEXT NOT NULL,
+            label_color TEXT DEFAULT '#6b7280',
+            template_group_id INTEGER,
+            is_default INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(host_id, group_name)
+        );
+        """
+        cursor = conn.cursor()
+        cursor.execute(sql_create_host_rule_groups_table)
+        print("主机规则分组表创建成功")
+    except Error as e:
+        print(f"创建表时出错: {e}")
+
+
+def create_host_rules_table(conn):
+    """创建主机规则表"""
+    try:
+        sql_create_host_rules_table = """
+        CREATE TABLE IF NOT EXISTS host_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            host_id INTEGER NOT NULL,
+            direction TEXT NOT NULL,
+            target TEXT,
+            protocol TEXT,
+            port TEXT,
+            auth_object TEXT,
+            description TEXT,
+            limit TEXT,
+            signature TEXT NOT NULL,
+            template_rule_id INTEGER,
+            host_group_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(host_id, direction, signature)
+        );
+        """
+        cursor = conn.cursor()
+        cursor.execute(sql_create_host_rules_table)
+        print("主机规则表创建成功")
     except Error as e:
         print(f"创建表时出错: {e}")
 
@@ -302,6 +376,9 @@ def main():
             create_hosts_table(conn)
             create_template_table(conn)
             create_rule_table(conn)
+            create_rule_groups_table(conn)
+            create_host_rule_groups_table(conn)
+            create_host_rules_table(conn)
             create_system_config_table(conn)
 
             # 创建RBAC相关表（新增和修改）

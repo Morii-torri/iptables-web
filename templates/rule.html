@@ -80,6 +80,7 @@
                   <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">协议类型</th>
                   <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">端口</th>
                   <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">授权对象</th>
+                  <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">分组</th>
                   <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">描述</th>
                   <th scope="col" class="px-6 py-4 text-right text-xs font-semibold text-secondary uppercase tracking-wider">操作</th>
                 </tr>
@@ -106,6 +107,24 @@
                   <td class="px-6 py-4 whitespace-nowrap text-sm text-secondary">{{ data.prot }}</td>
                   <td class="px-6 py-4 whitespace-nowrap text-sm text-secondary">{{ data.port }}</td>
                   <td class="px-6 py-4 whitespace-nowrap text-sm text-secondary">{{ data.source }}</td>
+                  <td class="px-6 py-4 text-sm text-secondary">
+                    <div class="flex flex-col gap-1">
+                      <span class="host-group-pill inline-flex items-center px-2 py-1 rounded-full text-xs" style="border: 1px solid {{ data.group_color or '#6b7280' }}; color: {{ data.group_color or '#6b7280' }};">
+                        {{ data.group_name or '未分组' }}
+                      </span>
+                      <select class="host-group-select text-xs border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary"
+                              data-host-rule-id="{{ data.host_rule_id }}"
+                              data-previous-value="{{ data.host_group_id }}">
+                        {% if host_groups %}
+                          {% for group in host_groups %}
+                            <option value="{{ group.id }}" {% if group.id == data.host_group_id %}selected{% endif %}>{{ group.group_name }}</option>
+                          {% endfor %}
+                        {% else %}
+                          <option value="">暂无分组</option>
+                        {% endif %}
+                      </select>
+                    </div>
+                  </td>
                   <!-- 描述列：合并限速信息和原有描述 -->
                   <td class="px-6 py-4 text-sm text-secondary">
                     {% if data.limit %}
@@ -292,6 +311,49 @@
     const speedLimitContainer = document.getElementById('speed-limit-container');
     const speedLimitInput = document.getElementById('speed-limit');
 
+    const hostGroups = {% if host_groups %}{{ host_groups|tojson }}{% else %}[]{% endif %};
+    const pageHostId = {{ id|tojson }};
+
+    document.querySelectorAll('.host-group-select').forEach(select => {
+      select.addEventListener('change', async function() {
+        const previousValue = this.getAttribute('data-previous-value');
+        const hostRuleId = this.getAttribute('data-host-rule-id');
+        const newGroupId = this.value;
+        try {
+          const response = await fetch(`/host_rules/${hostRuleId}/group`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              host_id: pageHostId,
+              group_id: Number(newGroupId)
+            })
+          });
+          const result = await response.json();
+          if (response.ok && result.success) {
+            this.setAttribute('data-previous-value', newGroupId);
+            const pill = this.closest('td').querySelector('.host-group-pill');
+            if (pill) {
+              pill.textContent = result.data.group_name;
+              pill.style.border = `1px solid ${result.data.label_color}`;
+              pill.style.color = result.data.label_color;
+            }
+            showToast('success-toast');
+          } else {
+            const fallbackValue = previousValue || (hostGroups[0] ? hostGroups[0].id : this.value);
+            this.value = fallbackValue;
+            alert(result.message || '更新分组失败');
+          }
+        } catch (error) {
+          console.error('更新规则分组失败:', error);
+          const fallbackValue = previousValue || (hostGroups[0] ? hostGroups[0].id : this.value);
+          this.value = fallbackValue;
+          alert('更新分组失败，请稍后重试');
+        }
+      });
+    });
+
     // 打开新增规则模态框
     addRuleBtn.addEventListener('click', () => {
       const dataCount = {{ data_list|length }};
@@ -373,7 +435,7 @@
       const currentUrl = window.location.pathname;
       const direction = currentUrl.includes('/rules_in') ? 'INPUT' : 'OUTPUT';
       // 获取host_id（从Flask后端传递）
-      const hostId = {{ id|tojson }};
+      const hostId = pageHostId;
 
       // 收集表单数据（新增：添加限速字段）
       const formData = {

@@ -170,6 +170,17 @@
               </div>
             </div>
 
+            <div class="mb-4">
+              <div class="flex justify-between items-center mb-2">
+                <h4 class="font-medium">规则分组</h4>
+                <button type="button" id="add-group-btn" class="text-sm text-primary hover:text-primary/80 flex items-center">
+                  <i class="fa fa-tags mr-1"></i> 新增分组
+                </button>
+              </div>
+              <div id="group-badges" class="flex flex-wrap gap-2"></div>
+              <p class="text-xs text-secondary mt-2">使用分组为规则添加标签，应用到主机后将自动继承。</p>
+            </div>
+
             <div class="mb-6">
               <div class="flex justify-between items-center mb-3">
                 <h4 class="font-medium">模板规则列表</h4>
@@ -188,6 +199,7 @@
                       <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-2/12">协议</th>
                       <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-2/12">端口</th>
                       <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-2/12">授权对象</th>
+                      <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-2/12">分组</th>
                       <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-2/12">描述</th>
                       <th scope="col" class="px-4 py-3 text-right text-xs font-semibold text-secondary uppercase tracking-wider w-1/12">操作</th>
                     </tr>
@@ -247,6 +259,11 @@
 
               <label for="rule-object" class="block text-sm font-medium text-gray-700 mb-1">授权对象 <span class="text-danger">*</span></label>
               <input type="text" id="rule-object" name="rule-object" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="例如：0.0.0.0/0 或 192.168.1.0/24">
+            </div>
+
+            <div>
+              <label for="rule-group" class="block text-sm font-medium text-gray-700 mb-1">规则分组</label>
+              <select id="rule-group" name="rule-group" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"></select>
             </div>
 
             <div class="md:col-span-2">
@@ -335,9 +352,13 @@
     const directionSelectContainer = document.getElementById('direction-select-container');
     const rulesTableBody = document.getElementById('rules-table-body');
     const templateForm = document.getElementById('template-form');
+    const groupBadgesContainer = document.getElementById('group-badges');
+    const addGroupBtn = document.getElementById('add-group-btn');
+    const ruleGroupSelectInput = document.getElementById('rule-group');
 
     // 当前应用的模板ID
     let currentTemplateId = null;
+    let templateGroups = [];
 
     // 模板表单字段
     const templateIdInput = document.getElementById('template-id');
@@ -378,6 +399,124 @@
         window.location.href = url.toString();
       });
     }
+    function setTemplateGroups(groups) {
+      if (!Array.isArray(groups) || groups.length === 0) {
+        templateGroups = [{ id: null, group_name: '默认分组', label_color: '#6366f1' }];
+      } else {
+        templateGroups = groups.map(group => ({
+          id: group.id || null,
+          group_name: group.group_name,
+          label_color: group.label_color || '#6366f1'
+        }));
+      }
+      renderGroupBadges();
+      updateRuleGroupSelectOptions();
+      updateRowGroupSelects();
+    }
+
+    function renderGroupBadges() {
+      if (!groupBadgesContainer) return;
+      if (!templateGroups.length) {
+        groupBadgesContainer.innerHTML = '<span class="text-xs text-secondary">暂无分组，点击上方按钮添加</span>';
+        return;
+      }
+      groupBadgesContainer.innerHTML = templateGroups.map((group, index) => `
+        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs" style="border: 1px solid ${group.label_color}; color: ${group.label_color};">
+          ${group.group_name}
+          <button type="button" class="ml-1 text-[10px] remove-group-btn" data-group-index="${index}">
+            <i class="fa fa-times"></i>
+          </button>
+        </span>
+      `).join('');
+    }
+
+    function buildRuleGroupOptions(selectedGroup) {
+      return templateGroups.map(group => `
+        <option value="${group.group_name}" ${group.group_name === selectedGroup ? 'selected' : ''}>${group.group_name}</option>
+      `).join('');
+    }
+
+    function updateRuleGroupSelectOptions() {
+      if (!ruleGroupSelectInput) return;
+      if (!templateGroups.length) {
+        ruleGroupSelectInput.innerHTML = '<option value="">请先创建分组</option>';
+        ruleGroupSelectInput.disabled = true;
+      } else {
+        ruleGroupSelectInput.disabled = false;
+        const defaultValue = templateGroups[0].group_name;
+        ruleGroupSelectInput.innerHTML = buildRuleGroupOptions(defaultValue);
+        ruleGroupSelectInput.value = defaultValue;
+      }
+    }
+
+    function getGroupColor(groupName) {
+      const group = templateGroups.find(item => item.group_name === groupName);
+      return group ? group.label_color : '#6b7280';
+    }
+
+    function updateRowGroupPill(row, groupName) {
+      const pill = row.querySelector('.rule-group-pill');
+      const select = row.querySelector('.rule-group-select');
+      const color = getGroupColor(groupName);
+      if (pill) {
+        pill.textContent = groupName || '默认分组';
+        pill.style.border = `1px solid ${color}`;
+        pill.style.color = color;
+      }
+      if (select && select.value !== groupName) {
+        select.value = groupName;
+      }
+      row.setAttribute('data-group-name', groupName);
+      row.setAttribute('data-group-color', color);
+    }
+
+    function updateRowGroupSelects() {
+      const rows = rulesTableBody.querySelectorAll('tr');
+      rows.forEach(row => {
+        const select = row.querySelector('.rule-group-select');
+        let currentGroup = row.getAttribute('data-group-name') || (templateGroups[0] ? templateGroups[0].group_name : '默认分组');
+        if (!templateGroups.find(group => group.group_name === currentGroup) && templateGroups[0]) {
+          currentGroup = templateGroups[0].group_name;
+        }
+        if (select) {
+          select.innerHTML = buildRuleGroupOptions(currentGroup);
+          select.value = currentGroup;
+        }
+        updateRowGroupPill(row, currentGroup);
+      });
+    }
+
+    function removeTemplateGroup(index) {
+      templateGroups.splice(index, 1);
+      if (!templateGroups.length) {
+        templateGroups.push({ id: null, group_name: '默认分组', label_color: '#6366f1' });
+      }
+      renderGroupBadges();
+      updateRuleGroupSelectOptions();
+      updateRowGroupSelects();
+    }
+
+    if (addGroupBtn) {
+      addGroupBtn.addEventListener('click', () => {
+        const name = prompt('请输入分组名称');
+        if (!name) return;
+        const color = prompt('请输入标签颜色（例如 #2563eb）', '#6366f1');
+        templateGroups.push({ id: null, group_name: name.trim(), label_color: color || '#6366f1' });
+        renderGroupBadges();
+        updateRuleGroupSelectOptions();
+        updateRowGroupSelects();
+      });
+    }
+
+    if (groupBadgesContainer) {
+      groupBadgesContainer.addEventListener('click', (event) => {
+        if (event.target.closest('.remove-group-btn')) {
+          const idx = Number(event.target.closest('.remove-group-btn').getAttribute('data-group-index'));
+          removeTemplateGroup(idx);
+        }
+      });
+    }
+
     // 打开新建模板模态框
     function openNewTemplateModal() {
       // 重置表单
@@ -387,6 +526,7 @@
       templateModal.classList.remove('hidden');
       directionSelectContainer.classList.remove('hidden'); // 显示方向选择
       rulesTableBody.innerHTML = ''; // 清空规则列表
+      setTemplateGroups([]);
 
       // 显示模态框动画
       setTimeout(() => {
@@ -427,6 +567,7 @@
         name: templateNameInput.value,
         direction: ruleDirectionSelect.value,
         description: templateDescriptionInput.value,
+        groups: templateGroups,
         rules: []
       };
 
@@ -454,8 +595,9 @@
         const protocol = cells[2].textContent;
         const port = cells[3].textContent;
         const object = cells[4].textContent;
+        const groupName = row.getAttribute('data-group-name') || (templateGroups[0] ? templateGroups[0].group_name : '默认分组');
         // 新增：解析描述中的限速信息和纯描述文本
-        const descCell = cells[5];
+        const descCell = cells[6];
         const tachometerIcon = descCell.querySelector('.fa-tachometer');
         let limit = '';
         let description = '';
@@ -483,7 +625,8 @@
           auth_object: object,
           description: description,
           // 新增：添加限速字段
-          limit: ruleLimit
+          limit: ruleLimit,
+          group_name: groupName
         });
       });
 
@@ -568,6 +711,7 @@
       // 显示方向选择下拉框，允许编辑
       directionSelectContainer.classList.add('hidden');
 
+      setTemplateGroups(templateData.groups || []);
       // 清空现有规则并填充新规则
       rulesTableBody.innerHTML = '';
       if (templateData.rules && templateData.rules.length > 0) {
@@ -579,6 +723,9 @@
           // 新增：处理限速信息
           const limit = rule.limit || '';
           const description = rule.description || '';
+          const groupName = rule.group_name || (templateGroups[0] ? templateGroups[0].group_name : '默认分组');
+          const groupColor = getGroupColor(groupName);
+          const groupOptions = buildRuleGroupOptions(groupName);
 
           // 构建描述内容，包含限速信息（如果有）
           let descContent = '';
@@ -602,6 +749,8 @@
 
           // 新增：存储限速信息
           newRow.setAttribute('data-rule-limit', limit);
+          newRow.setAttribute('data-group-name', groupName);
+          newRow.setAttribute('data-group-color', groupColor);
 
           newRow.innerHTML = `
             <td class="px-4 py-3 whitespace-nowrap text-sm text-secondary">${index + 1}</td>
@@ -611,6 +760,14 @@
             <td class="px-4 py-3 whitespace-nowrap text-sm text-secondary">${rule.protocol || '-'}</td>
             <td class="px-4 py-3 whitespace-nowrap text-sm text-secondary">${rule.port || '-'}</td>
             <td class="px-4 py-3 text-sm text-secondary">${rule.auth_object || rule.auth_objec || '-'}</td> <!-- 处理可能的拼写错误 -->
+            <td class="px-4 py-3 text-sm text-secondary">
+              <div class="flex flex-col gap-1">
+                <span class="rule-group-pill inline-flex items-center px-2 py-1 rounded-full text-xs" style="border: 1px solid ${groupColor}; color: ${groupColor};">${groupName}</span>
+                <select class="rule-group-select text-xs border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary">
+                  ${groupOptions}
+                </select>
+              </div>
+            </td>
             <td class="px-4 py-3 text-sm text-secondary">
               ${descContent}
             </td>
@@ -678,12 +835,19 @@
 
     // 确认添加规则
     document.getElementById('confirm-add-rule-btn').addEventListener('click', () => {
+      if (!templateGroups.length) {
+        alert('请先创建至少一个分组');
+        return;
+      }
       const policy = document.getElementById('rule-policy').value;
       const protocol = document.getElementById('rule-protocol').value;
       const port = document.getElementById('rule-port').value;
       const object = document.getElementById('rule-object').value;
       const desc = document.getElementById('rule-desc').value;
       const limit = document.getElementById('rule-limit').value.trim();
+      const selectedGroup = ruleGroupSelectInput.value || (templateGroups[0] ? templateGroups[0].group_name : '默认分组');
+      const groupColor = getGroupColor(selectedGroup);
+      const groupOptions = buildRuleGroupOptions(selectedGroup);
 
       // 简单验证
       if (!port || !object) {
@@ -702,6 +866,8 @@
       newRow.setAttribute('data-rule-id', '');
       // 新增：存储限速信息
       newRow.setAttribute('data-rule-limit', limit ? `${limit}kb/s` : '');
+      newRow.setAttribute('data-group-name', selectedGroup);
+      newRow.setAttribute('data-group-color', groupColor);
 
       // 构建描述内容，包含限速信息（如果有）
       let descContent = '';
@@ -727,6 +893,14 @@
         <td class="px-4 py-3 whitespace-nowrap text-sm text-secondary">${protocol}</td>
         <td class="px-4 py-3 whitespace-nowrap text-sm text-secondary">${port}</td>
         <td class="px-4 py-3 text-sm text-secondary">${object}</td>
+        <td class="px-4 py-3 text-sm text-secondary">
+          <div class="flex flex-col gap-1">
+            <span class="rule-group-pill inline-flex items-center px-2 py-1 rounded-full text-xs" style="border: 1px solid ${groupColor}; color: ${groupColor};">${selectedGroup}</span>
+            <select class="rule-group-select text-xs border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary">
+              ${groupOptions}
+            </select>
+          </div>
+        </td>
         <td class="px-4 py-3 text-sm text-secondary">${desc || '-'}</td>
         <td class="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
           <button class="text-danger hover:text-red-700 transition-colors delete-rule">
@@ -764,6 +938,14 @@
         row.querySelector('td:first-child').textContent = index + 1;
       });
     }
+
+    rulesTableBody.addEventListener('change', (event) => {
+      if (event.target.classList.contains('rule-group-select')) {
+        const row = event.target.closest('tr');
+        const groupName = event.target.value;
+        updateRowGroupPill(row, groupName);
+      }
+    });
 
     // ========== 应用模板相关逻辑 ==========
     // 打开应用模板模态框
