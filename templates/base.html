@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns="http://www.w3.org/1999/html">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="static/盾牌.svg" type="image/svg+xml">
+  <title>防火墙管理系统</title>
+    <!-- 引入Tailwind CSS -->
+<!--    <script src="https://cdn.tailwindcss.com"></script>-->
+    <!-- 使用Flask的url_for函数生成正确路径 -->
+    <link href="{{ url_for('static', filename='font-awesome-4.7.0/css/output.css') }}" rel="stylesheet">
+    <!-- 引入Font Awesome -->
+    <link href="{{ url_for('static', filename='font-awesome-4.7.0/css/font-awesome.min.css') }}" rel="stylesheet">
+
+  <!-- 配置Tailwind自定义颜色和字体 -->
+  <script>
+    // 修改主题应用逻辑，只针对侧边栏
+    function applyTheme(theme) {
+      // 获取侧边栏元素
+      const sidebar = document.querySelector('.sidebar-container');
+      if (!sidebar) return;
+
+      // 移除所有主题类
+      sidebar.classList.remove('light', 'dark');
+      // 添加当前主题类
+      sidebar.classList.add(theme);
+      localStorage.setItem('color_mode', theme);
+
+      // 调试信息
+      console.log('应用侧边栏主题:', theme);
+    }
+
+    function initTheme() {
+      // 先尝试从本地存储获取主题
+      const localTheme = localStorage.getItem('color_mode');
+      if (localTheme) {
+        applyTheme(localTheme);
+      }
+
+      // 再从服务器获取最新配置
+      fetch('/api/system-config')
+        .then(response => {
+          if (!response.ok) throw new Error('网络错误');
+          return response.json();
+        })
+        .then(config => {
+          const savedTheme = config.color_mode || 'light';
+          applyTheme(savedTheme);
+        })
+        .catch(error => {
+          console.error('主题初始化失败:', error);
+          // 错误时使用默认亮色主题
+          applyTheme('light');
+        });
+    }
+
+    // 确保DOM加载完成后初始化
+    document.addEventListener('DOMContentLoaded', initTheme);
+  </script>
+
+  <!-- 自定义工具类 -->
+</head>
+
+<body class="bg-gray-50 font-sans text-dark antialiased">
+  <div class="flex h-screen overflow-hidden">
+    <!-- 侧边栏 - 添加sidebar-container类用于主题控制 -->
+    <div class="sidebar-container w-64 bg-white border-r border-gray-200 flex-shrink-0 hidden md:block">
+      <div class="p-4 border-b border-gray-200 cursor-pointer hover:bg-gray-50 transition-colors">
+        <h2 class="text-xl font-bold text-primary flex items-center">
+          <i class="fa fa-shield mr-2"></i>
+          <span id="app-name">防火墙管理系统</span>
+        </h2>
+      </div>
+
+      <div class="h-full overflow-y-auto py-4">
+        <nav class="px-2 space-y-1">
+          <p class="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1 mt-4">主菜单</p>
+
+          <div class="sidebar-item active cursor-pointer">
+            <a href="/hosts?page=1" class="block w-full h-full p-3 flex items-center">
+              <i class="fa fa-server w-5 h-5 mr-3"></i>
+              <span>主机管理</span>
+            </a>
+          </div>
+
+          <div class="sidebar-item cursor-pointer">
+            <a href="/templates" class="block w-full h-full p-3 flex items-center">
+              <i class="fa fa-list-alt w-5 h-5 mr-3"></i>
+              <span>模板管理</span>
+            </a>
+          </div>
+
+          <p class="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1 mt-6">系统</p>
+
+          <div class="sidebar-item cursor-pointer">
+            <a href="/systemseting" class="block w-full h-full p-3 flex items-center">
+              <i class="fa fa-cog w-5 h-5 mr-3"></i>
+              <span>系统设置</span>
+            </a>
+          </div>
+
+          <div class="sidebar-item cursor-pointer">
+            <a href="/logs" class="block w-full h-full p-3 flex items-center">
+              <i class="fa fa-history w-5 h-5 mr-3"></i>
+              <span>操作日志</span>
+            </a>
+          </div>
+
+        </nav>
+      </div>
+    </div>
+
+<!-- 主内容区 -->
+{% block main %}
+{% endblock main %}
+
+<!-- js -->
+{% block script %}
+{% endblock script %}
+<script>
+    // 页面加载时执行
+    document.addEventListener('DOMContentLoaded', function() {
+      fetchSystemConfig();
+    });
+
+function fetchSystemConfig() {
+  // 调用后端API获取系统配置
+  fetch('/api/system-config')
+    .then(response => {
+      if (!response.ok) {
+        // 处理HTTP错误状态
+        return response.json().then(err => {
+          throw new Error(err.error || `HTTP错误: ${response.status}`);
+        });
+      }
+      return response.json();
+    })
+    .then(data => {
+      // 如果返回了系统名称，则更新相关元素
+      if (data.system_name) {
+        // 更新页面标题
+        document.title = data.system_name;
+
+        // 更新左上角显示的系统名称
+        const appNameElement = document.getElementById('app-name');
+        if (appNameElement) {
+          appNameElement.textContent = data.system_name;
+        }
+
+        // 更新设置页面中的输入框值
+        const systemNameInput = document.querySelector('#system-config-form input[type="text"]');
+        if (systemNameInput) {
+          systemNameInput.value = data.system_name;
+        }
+      }
+    })
+    .catch(error => {
+      console.error('获取系统配置失败:', error.message);
+      // 可以在这里添加用户可见的错误提示
+    });
+}
+
+
+
+document.addEventListener('DOMContentLoaded', function() {
+  // 获取当前页面的URL路径（仅路径部分，不含查询参数）
+  const currentPath = window.location.pathname;
+
+  // 获取所有侧边栏按钮
+  const sidebarItems = document.querySelectorAll('.sidebar-item');
+
+  // 定义系统设置相关的路径
+  const systemSettingPaths = ['/systemseting', '/users', '/roles'];
+
+  // 遍历每个按钮，判断路径是否匹配
+  sidebarItems.forEach(item => {
+    const link = item.querySelector('a');
+    const linkHref = link.getAttribute('href');
+    const linkPath = new URL(linkHref, window.location.origin).pathname;
+
+    // 检查当前路径是否是系统设置或其子模块
+    const isSystemSettingItem = linkPath === '/systemseting';
+    const isSystemRelatedPage = systemSettingPaths.includes(currentPath);
+
+    // 匹配规则：
+    // 1. 普通项：路径完全匹配
+    // 2. 系统设置项：当前路径是系统设置或其子模块（users/roles）
+    if (currentPath === linkPath || (isSystemSettingItem && isSystemRelatedPage)) {
+      item.classList.add('active');
+    } else {
+      item.classList.remove('active');
+    }
+  });
+});
+</script>
+</body>
+</html>

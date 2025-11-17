@@ -1,0 +1,479 @@
+{% extends 'base.html' %}
+{% block main %}
+    <div class="flex-1 flex flex-col overflow-hidden">
+      <!-- 顶部导航栏 -->
+      <header class="bg-white border-b border-gray-200 shadow-sm z-10">
+        <div class="flex items-center justify-between h-16 px-6">
+          <!-- 移动端菜单按钮 -->
+          <button id="mobile-menu-btn" class="md:hidden text-gray-500 hover:text-gray-700">
+            <i class="fa fa-bars text-xl"></i>
+          </button>
+
+          <!-- 搜索框 -->
+          <div class="flex-1 max-w-md mx-4 hidden md:block">
+            <div class="relative">
+              <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <i class="fa fa-search text-gray-400"></i>
+              </div>
+              <input type="text" class="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-primary focus:border-primary sm:text-sm" placeholder="搜索规则、主机...">
+            </div>
+          </div>
+
+          <!-- 右侧工具栏 -->
+          <div class="flex items-center space-x-4">
+            <button class="text-gray-500 hover:text-gray-700 relative"
+                    onclick="window.location.href='/logout'">
+              <span class="flex items-center">
+                <i class="fa fa-sign-out text-xl mr-1"></i>
+                <span class="text-sm">退出登录</span>
+              </span>
+            </button>
+            <button class="text-gray-500 hover:text-gray-700">
+              <i class="fa fa-question-circle text-xl"></i>
+            </button>
+            <div class="hidden md:block h-6 w-px bg-gray-300"></div>
+            <button class="md:hidden text-gray-500 hover:text-gray-700">
+              <i class="fa fa-search text-xl"></i>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- 页面内容 -->
+      <main class="flex-1 overflow-y-auto bg-gray-50 p-6">
+        <div class="container mx-auto max-w-7xl">
+          <!-- 页面标题 -->
+          <header class="mb-8">
+            <h1 class="text-[clamp(1.5rem,3vw,2.5rem)] font-bold text-dark mb-2">防火墙规则管理</h1>
+            <p class="text-secondary">管理和配置防火墙的访问控制规则</p>
+          </header>
+
+          <!-- 方向选择、主机信息和新增按钮区域 -->
+          <div class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+            <!-- 方向选择 - 左侧 -->
+            <div class="flex bg-white p-1 rounded-lg border border-gray-200 self-start md:self-auto">
+            <a href="/rules_in?host_id={{ id }}">
+              <button id="inbound-btn" class="px-4 py-2 rounded-md text-secondary font-medium hover:bg-gray-100 transition-colors">
+                <i class="fa fa-sign-in mr-1"></i> 入方向
+              </button>
+            </a>
+              <a href="/rules_out?host_id={{ id }}">
+              <button id="outbound-btn" class="px-4 py-2 rounded-md text-secondary font-medium hover:bg-gray-100 transition-colors">
+                <i class="fa fa-sign-out mr-1"></i> 出方向
+              </button>
+              </a>
+            </div>
+
+            <!-- 新增规则按钮 - 右侧 -->
+            <button id="add-rule-btn" class="bg-primary text-white px-5 py-2.5 rounded-lg font-medium flex items-center btn-hover self-start md:self-auto ml-auto">
+              <i class="fa fa-plus mr-2"></i> 新增规则
+            </button>
+          </div>
+
+          <!-- 规则列表 -->
+          <div class="bg-white rounded-xl table-shadow overflow-hidden">
+            <table class="min-w-full divide-y divide-gray-200">
+              <thead class="bg-gray-50">
+                <tr>
+                  <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">ID</th>
+                  <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">授权策略</th>
+                  <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">协议类型</th>
+                  <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">端口</th>
+                  <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">授权对象</th>
+                  <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">描述</th>
+                  <th scope="col" class="px-6 py-4 text-right text-xs font-semibold text-secondary uppercase tracking-wider">操作</th>
+                </tr>
+              </thead>
+              <tbody class="bg-white divide-y divide-gray-200">
+              {% for data in data_list %}
+                <!-- 规则行：通过data-*属性存储规则数据 -->
+                <tr class="hover:bg-gray-50 transition-colors"
+                    data-num="{{ data.num }}"
+                    data-target="{{ data.target }}"
+                    data-prot="{{ data.prot }}"
+                    data-port="{{ data.port }}"
+                    data-source="{{ data.source }}"
+                    data-comment="{{ data.comment }}"
+                    data-limit="{{ data.limit }}">
+                  <td class="data-num px-6 py-4 whitespace-nowrap text-sm font-medium text-dark">{{ data.num }}</td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm">
+                    {% if data.target == 'ACCEPT' %}
+                      <span class="px-2 py-1 text-xs rounded-full bg-green-100 text-success">{{ data.target }}</span>
+                    {% else %}
+                      <span class="px-2 py-1 text-xs rounded-full bg-red-100 text-danger">{{ data.target }}</span>
+                    {% endif %}
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-secondary">{{ data.prot }}</td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-secondary">{{ data.port }}</td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-secondary">{{ data.source }}</td>
+                  <!-- 描述列：合并限速信息和原有描述 -->
+                  <td class="px-6 py-4 text-sm text-secondary">
+                    {% if data.limit %}
+                      <!-- 限速信息：带颜色图标 + 速率值 -->
+                      <span class="inline-flex items-center mr-2" style="color: #3B82F6;">  <!-- 蓝色十六进制值 -->
+                        <i class="fa fa-tachometer mr-1"></i>
+                        {{ data.limit }}
+                      </span>
+                      <!-- 原有描述（如果存在则显示） -->
+                      {% if data.comment %}
+                        <span class="text-gray-600">- {{ data.comment }}</span>
+                      {% endif %}
+                    {% else %}
+                      <!-- 无限速时仅显示原有描述 -->
+                      {{ data.comment or '' }}
+                    {% endif %}
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    <button class="edit-btn text-info hover:text-primary mr-3 transition-colors">
+                      <i class="fa fa-pencil"></i> 编辑
+                    </button>
+                    <button class="delete-btn text-danger hover:text-red-700 transition-colors">
+                      <i class="fa fa-trash"></i> 删除
+                    </button>
+                  </td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+    </div>
+  </div>
+      </main>
+
+  <!-- 模态框 - 新增/编辑规则 -->
+  <div id="rule-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto transform transition-all">
+      <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+        <h3 class="text-lg font-semibold" id="modal-title">新增规则</h3>
+        <button id="close-modal" class="text-gray-400 hover:text-gray-500">
+          <i class="fa fa-times"></i>
+        </button>
+      </div>
+
+      <div class="px-6 py-5">
+        <form id="rule-form">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+              <label for="rule-id" class="block text-sm font-medium text-gray-700 mb-1">ID</label>
+              <input type="text" id="rule-id" name="rule-id" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="自动生成">
+            </div>
+
+            <div>
+              <label for="auth-policy" class="block text-sm font-medium text-gray-700 mb-1">授权策略</label>
+              <select id="auth-policy" name="auth-policy" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                <option value="ACCEPT">允许</option>
+                <option value="DROP">拒绝</option>
+              </select>
+            </div>
+
+            <div>
+              <label for="protocol" class="block text-sm font-medium text-gray-700 mb-1">协议类型</label>
+              <select id="protocol" name="protocol" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                <option value="tcp">TCP</option>
+                <option value="udp">UDP</option>
+                <option value="icmp">ICMP</option>
+                <option value="all">全部</option>
+              </select>
+            </div>
+
+            <div>
+              <label for="port" class="block text-sm font-medium text-gray-700 mb-1">端口</label>
+              <input type="text" id="port" name="port" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="例如: 80 或 100-200">
+            </div>
+
+            <div class="md:col-span-2">
+              <label for="auth-object" class="block text-sm font-medium text-gray-700 mb-1">授权对象</label>
+              <input type="text" id="auth-object" name="auth-object" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="IP地址或网段，例如: 192.168.1.0/24">
+            </div>
+
+            <!-- 限速输入框（一直显示） -->
+            <div id="speed-limit-container" class="md:col-span-2">
+              <label for="speed-limit" class="block text-sm font-medium text-gray-700 mb-1">限制速率（kb/s，留空表示不限速）</label>
+              <div class="flex items-center">
+                <input type="number" id="speed-limit" name="speed-limit" min="1" class="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="输入速率值">
+                <span class="ml-2 text-gray-700">kb/s</span>
+              </div>
+            </div>
+
+            <div class="md:col-span-2">
+              <label for="description" class="block text-sm font-medium text-gray-700 mb-1">描述</label>
+              <textarea id="description" name="description" rows="3" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="规则描述信息"></textarea>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end space-x-3">
+        <button id="cancel-btn" class="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-100 transition-colors">取消</button>
+        <button id="save-btn" class="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary/90 transition-colors">保存</button>
+      </div>
+    </div>
+  </div>
+  <!-- 提示消息 -->
+  <div id="success-toast" class="toast bg-success text-white translate-x-full">
+    <i class="fa fa-check-circle mr-2"></i>
+    <span>操作成功！</span>
+  </div>
+  <div id="error-toast" class="toast bg-danger text-white translate-x-full">
+    <i class="fa fa-times-circle mr-2"></i>
+    <span>操作失败，请重试！</span>
+  </div>
+{% endblock main %}
+
+
+{% block script %}
+  <script>
+    // 新增状态标记：true为编辑，false为新增
+    let isEditing = false;
+    // 方向选择按钮交互
+    const inboundBtn = document.getElementById('inbound-btn');
+    const outboundBtn = document.getElementById('outbound-btn');
+
+    // 根据当前URL设置初始激活状态
+    function setActiveDirection() {
+      const currentUrl = window.location.pathname;
+
+      if (currentUrl.includes('/rules_in')) {
+        inboundBtn.classList.remove('text-secondary', 'hover:bg-gray-100');
+        inboundBtn.classList.add('bg-primary', 'text-white');
+        outboundBtn.classList.remove('bg-primary', 'text-white');
+        outboundBtn.classList.add('text-secondary', 'hover:bg-gray-100');
+      } else if (currentUrl.includes('/rules_out')) {
+        outboundBtn.classList.remove('text-secondary', 'hover:bg-gray-100');
+        outboundBtn.classList.add('bg-primary', 'text-white');
+        inboundBtn.classList.remove('bg-primary', 'text-white');
+        inboundBtn.classList.add('text-secondary', 'hover:bg-gray-100');
+      }
+    }
+
+    // 页面加载时设置初始状态
+    setActiveDirection();
+
+    inboundBtn.addEventListener('click', () => {
+      inboundBtn.classList.remove('text-secondary', 'hover:bg-gray-100');
+      inboundBtn.classList.add('bg-primary', 'text-white');
+      outboundBtn.classList.remove('bg-primary', 'text-white');
+      outboundBtn.classList.add('text-secondary', 'hover:bg-gray-100');
+      console.log('切换到入方向规则');
+    });
+
+    outboundBtn.addEventListener('click', () => {
+      outboundBtn.classList.remove('text-secondary', 'hover:bg-gray-100');
+      outboundBtn.classList.add('bg-primary', 'text-white');
+      inboundBtn.classList.remove('bg-primary', 'text-white');
+      inboundBtn.classList.add('text-secondary', 'hover:bg-gray-100');
+      console.log('切换到出方向规则');
+    });
+
+    // 显示提示消息
+    function showToast(elementId) {
+      const toast = document.getElementById(elementId);
+      toast.classList.remove('translate-x-full');
+      setTimeout(() => {
+        toast.classList.add('translate-x-full');
+      }, 3000);
+    }
+
+    // 模态框相关元素
+    const modal = document.getElementById('rule-modal');
+    const addRuleBtn = document.getElementById('add-rule-btn');
+    const closeModalBtn = document.getElementById('close-modal');
+    const cancelBtn = document.getElementById('cancel-btn');
+    const saveBtn = document.getElementById('save-btn');
+    const modalTitle = document.getElementById('modal-title');
+    // 表单元素
+    const ruleForm = document.getElementById('rule-form');
+    const ruleIdInput = document.getElementById('rule-id');
+    const authPolicySelect = document.getElementById('auth-policy');
+    const protocolSelect = document.getElementById('protocol');
+    const portInput = document.getElementById('port');
+    const authObjectInput = document.getElementById('auth-object');
+    const descriptionTextarea = document.getElementById('description');
+    // 新增：获取限速相关元素
+    const speedLimitContainer = document.getElementById('speed-limit-container');
+    const speedLimitInput = document.getElementById('speed-limit');
+
+    // 打开新增规则模态框
+    addRuleBtn.addEventListener('click', () => {
+      const dataCount = {{ data_list|length }};
+      modalTitle.textContent = '新增规则';
+      ruleForm.reset(); // 重置表单
+      ruleIdInput.value = dataCount + 1; // 自动生成ID
+      isEditing = false; // 标记为“新增”状态
+      ruleIdInput.disabled = isEditing; // 简化逻辑：编辑时禁用，新增时启用
+      // 移除：初始化限速输入框状态
+      // toggleSpeedLimitInput();
+      // 显示模态框
+      modal.classList.remove('hidden');
+      setTimeout(() => {
+        modal.querySelector('div').classList.add('scale-100');
+        modal.querySelector('div').classList.remove('scale-95');
+      }, 10);
+    });
+
+    // 关闭模态框
+    const closeModal = () => {
+      modal.querySelector('div').classList.remove('scale-100');
+      modal.querySelector('div').classList.add('scale-95');
+      setTimeout(() => {
+        modal.classList.add('hidden');
+        speedLimitContainer.classList.add('hidden'); // 关闭时隐藏，避免下次打开残留
+        speedLimitInput.value = ''; // 清空输入值
+      }, 200);
+    };
+
+    closeModalBtn.addEventListener('click', closeModal);
+    cancelBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) closeModal();
+    });
+
+    // 编辑按钮交互：回显数据到模态框
+    document.querySelectorAll('.edit-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const row = btn.closest('tr'); // 获取当前规则行
+        // 从data-*属性读取数据
+        const ruleData = {
+          num: row.dataset.num,
+          target: row.dataset.target,
+          prot: row.dataset.prot,
+          port: row.dataset.port,
+          source: row.dataset.source,
+          comment: row.dataset.comment,
+          limit: row.dataset.limit || '' // 读取限速值，默认空字符串
+        };
+
+        // 填充表单数据
+        modalTitle.textContent = '编辑规则';
+        ruleIdInput.value = ruleData.num; // 回显ID
+        authPolicySelect.value = ruleData.target; // 选中授权策略
+        protocolSelect.value = ruleData.prot; // 选中协议类型
+        portInput.value = ruleData.port; // 回显端口
+        authObjectInput.value = ruleData.source; // 回显授权对象
+        descriptionTextarea.value = ruleData.comment; // 回显描述
+
+        // 修改：回显限速数值（移除kb/s单位，只保留数字）
+        speedLimitInput.value = ruleData.limit ? ruleData.limit.replace(/kb\/s$/, '').trim() : ''
+
+        isEditing = true; // 标记为“编辑”状态
+        ruleIdInput.disabled = isEditing; // 编辑时禁用ID
+
+
+        // 显示模态框
+        modal.classList.remove('hidden');
+        setTimeout(() => {
+          modal.querySelector('div').classList.add('scale-100');
+          modal.querySelector('div').classList.remove('scale-95');
+        }, 10);
+      });
+    });
+
+    // 保存按钮：提交新增/编辑请求
+    saveBtn.addEventListener('click', async () => {
+      // 获取当前页面方向（入方向/出方向）
+      const currentUrl = window.location.pathname;
+      const direction = currentUrl.includes('/rules_in') ? 'INPUT' : 'OUTPUT';
+      // 获取host_id（从Flask后端传递）
+      const hostId = {{ id|tojson }};
+
+      // 收集表单数据（新增：添加限速字段）
+      const formData = {
+        host_id: hostId,
+        direction: direction,
+        rule_id: document.getElementById('rule-id').value,
+        auth_policy: document.getElementById('auth-policy').value,
+        protocol: document.getElementById('protocol').value,
+        port: document.getElementById('port').value,
+        auth_object: document.getElementById('auth-object').value,
+        description: document.getElementById('description').value,
+        // 修改：限速值（拼接kb/s单位），无论策略如何，只要有值就传递
+        limit: speedLimitInput.value.trim()
+          ? `${speedLimitInput.value.trim()}kb/s`
+          : ''
+      };
+
+
+      // 根据状态决定请求URL（新增→/rules_add，编辑→/rules_update）
+      const url = isEditing ? '/rules_update' : '/rules_add';
+
+      try {
+        // 发送POST请求到后端更新接口
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            // 如果需要CSRF保护，添加CSRF令牌（根据Flask配置）
+            // 'X-CSRFToken': getCSRFToken()
+          },
+          body: JSON.stringify(formData)
+        });
+
+        if (response.ok) {
+          showToast('success-toast');
+          closeModal();
+          window.location.reload(); // 刷新页面显示新数据
+        } else {
+          throw new Error(isEditing ? '更新失败' : '新增失败');
+        }
+      } catch (error) {
+        console.error('请求失败:', error);
+        showToast('error-toast');
+      }
+    });
+
+    // 删除按钮交互（保持原有逻辑）
+    const currentUrlDel = window.location.pathname;
+    if (currentUrlDel.includes('/rules_in')) {
+      document.querySelectorAll('.delete-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (confirm('确定要删除这条规则吗？')) {
+            const row = btn.closest('tr');
+            const dataNum = row.dataset.num;
+            const hostId = {{ id|tojson }};
+            fetch(`/rule_del?host_id=${hostId}&rule_id=${dataNum}&direction=INPUT`, {
+              method: 'DELETE'
+            })
+            .then(response => {
+              if (response.ok) {
+                window.location.reload();
+                showToast('success-toast');
+              } else {
+                showToast('error-toast');
+              }
+            })
+            .catch(error => {
+              console.error('删除请求失败:', error);
+              showToast('error-toast');
+            });
+          }
+        });
+      });
+    }
+    if (currentUrlDel.includes('/rules_out')) {
+      document.querySelectorAll('.delete-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (confirm('确定要删除这条规则吗？')) {
+            const row = btn.closest('tr');
+            const dataNum = row.dataset.num;
+            const hostId = {{ id|tojson }};
+            fetch(`/rule_del?host_id=${hostId}&rule_id=${dataNum}&direction=OUTPUT`, {
+              method: 'DELETE'
+            })
+            .then(response => {
+              if (response.ok) {
+                window.location.reload();
+                showToast('success-toast');
+              } else {
+                showToast('error-toast');
+              }
+            })
+            .catch(error => {
+              console.error('删除请求失败:', error);
+              showToast('error-toast');
+            });
+          }
+        });
+      });
+    }
+
+  </script>
+{% endblock script %}

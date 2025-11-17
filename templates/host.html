@@ -1,0 +1,715 @@
+{% extends 'base.html' %}
+{% block main %}
+<style type="text/tailwindcss">
+    @layer utilities {
+      /* 提示消息基础样式 - 默认隐藏 */
+      .toast {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 20px;
+        border-radius: 6px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        transition: all 0.3s ease;
+        transform: translateX(120%); /* 默认向右移出屏幕 */
+        opacity: 0; /* 默认完全透明 */
+      }
+      /* 显示状态 - 通过JS添加此类 */
+      .toast.show {
+        transform: translateX(0); /* 移动到可见位置 */
+        opacity: 1; /* 完全显示 */
+      }
+      /* 颜色样式（保持不变） */
+      .bg-success { background-color: #10b981; }
+      .bg-danger { background-color: #ef4444; }
+      .text-white { color: white; }
+
+      /* 将所有工具类移至 @layer utilities 内部 */
+      .test-toast { color: red; }  /* 新增测试样式 */
+      .content-auto {
+        content-visibility: auto;
+      }
+      .table-shadow {
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      }
+      .btn-hover {
+        @apply transition-all duration-200 hover:shadow-md transform hover:-translate-y-0.5;
+      }
+      .sidebar-item {
+        @apply flex items-center px-4 py-3 text-gray-700 hover:bg-primary/10 hover:text-primary transition-colors cursor-pointer;
+      }
+      .sidebar-item.active {
+        @apply bg-primary/10 text-primary border-l-4 border-primary;
+      }
+    }  /* 仅保留这一个闭合括号 */
+
+    /* 侧边栏暗色模式样式 */
+    .sidebar-container.dark {
+      background-color: #1a202c;
+      border-color: #4a5568;
+    }
+
+    .sidebar-container.dark .border-b {
+      border-color: #4a5568;
+    }
+
+    .sidebar-container.dark .hover:bg-gray-50:hover {
+      background-color: #4a5568;
+    }
+
+    .sidebar-container.dark .text-gray-500 {
+      color: #a0aec0;
+    }
+
+    .sidebar-container.dark .sidebar-item {
+      color: #e2e8f0;
+    }
+
+    .sidebar-container.dark .sidebar-item:hover {
+      color: #fff;
+    }
+  </style>
+    <!-- 主内容区 -->
+    <div class="flex-1 flex flex-col overflow-hidden">
+      <!-- 顶部导航栏 -->
+      <header class="bg-white border-b border-gray-200 shadow-sm z-10">
+        <div class="flex items-center justify-between h-16 px-6">
+          <!-- 移动端菜单按钮 -->
+          <button id="mobile-menu-btn" class="md:hidden text-gray-500 hover:text-gray-700">
+            <i class="fa fa-bars text-xl"></i>
+          </button>
+
+          <!-- 搜索框 -->
+          <div class="flex-1 max-w-md mx-4 hidden md:block">
+            <form id="search-form" class="relative">
+              <!-- 搜索图标按钮 -->
+              <button type="submit" class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-400 hover:text-primary transition-colors">
+                <i class="fa fa-search"></i>
+              </button>
+
+              <!-- 搜索输入框 -->
+              <input
+                type="text"
+                name="search"
+                class="block w-full pl-10 pr-10 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-primary focus:border-primary sm:text-sm"
+                placeholder="搜索主机、IP地址..."
+                value="{{ search_keyword|default('') }}">  <!-- 保留搜索关键词 -->
+
+              <!-- 清除按钮（仅在有搜索内容时显示） -->
+              {% if search_keyword %}
+                <button type="button" id="clear-search" class="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600">
+                  <i class="fa fa-times-circle"></i>
+                </button>
+              {% endif %}
+            </form>
+          </div>
+
+          <!-- 右侧工具栏 -->
+          <div class="flex items-center space-x-4">
+            <button class="text-gray-500 hover:text-gray-700 relative"
+                    onclick="window.location.href='/logout'">
+              <span class="flex items-center">
+                <i class="fa fa-sign-out text-xl mr-1"></i>
+                <span class="text-sm">退出登录</span>
+              </span>
+            </button>
+            <button class="text-gray-500 hover:text-gray-700">
+              <i class="fa fa-question-circle text-xl"></i>
+            </button>
+            <div class="hidden md:block h-6 w-px bg-gray-300"></div>
+            <button class="md:hidden text-gray-500 hover:text-gray-700">
+              <i class="fa fa-search text-xl"></i>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- 页面内容 -->
+      <main class="flex-1 overflow-y-auto bg-gray-50 p-6">
+        <div class="container mx-auto max-w-7xl">
+          <!-- 页面标题和操作区 -->
+          <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+            <div>
+              <h1 class="text-[clamp(1.5rem,3vw,2.5rem)] font-bold text-dark mb-2">主机管理</h1>
+              <p class="text-secondary">管理所有受防火墙保护的主机设备</p>
+            </div>
+
+            <div class="flex flex-wrap gap-3 self-end md:self-auto ml-auto">
+              <button id="add-host-btn" class="bg-primary text-white px-5 py-2 rounded-lg font-medium flex items-center btn-hover">
+                <i class="fa fa-plus mr-2"></i> 添加主机
+              </button>
+            </div>
+          </div>
+          <!-- 新增：搜索结果提示 -->
+          {% if search_keyword %}
+          <div class="mb-4 flex items-center text-sm text-secondary">
+            <i class="fa fa-search mr-2"></i>
+            <span>搜索关键词: "<strong>{{ search_keyword }}</strong>"，找到 {{ sum }} 条结果</span>
+            <a href="{{ url_for('hosts', page=1) }}" class="ml-4 text-primary hover:underline text-sm">
+              <i class="fa fa-times-circle mr-1"></i> 清除搜索
+            </a>
+          </div>
+          {% endif %}
+          <!-- 主机列表 -->
+          <div class="bg-white rounded-xl table-shadow overflow-hidden">
+            <table class="min-w-full divide-y divide-gray-200">
+              <thead class="bg-gray-50">
+                <tr>
+                  <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">主机名称</th>
+                  <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">IP地址</th>
+                  <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">操作系统</th>
+                  <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">创建时间</th>
+                  <th scope="col" class="px-6 py-4 text-right text-xs font-semibold text-secondary uppercase tracking-wider">操作</th>
+                </tr>
+              </thead>
+              <tbody class="bg-white divide-y divide-gray-200" id="hosts-table-body">
+                <!-- 主机1 -->
+                {% for host in host_list %}
+                <!-- 修正后的tr结构 -->
+                <tr class="hover:bg-gray-50 transition-colors data-info"
+                    data-id="{{ host.id }}"
+                    data-host-name="{{ host.host_name }}"
+                    data-host-identifier="{{ host.host_identifier }}"
+                    data-ip-address="{{ host.ip_address }}"
+                    data-os="{{ host.operating_system }}"
+                    data-ssh-port="{{ host.ssh_port|default(22) }}"
+                    data-auth-username="{{ host.username|default('') }}"
+                    data-auth-method="{{ host.auth_method|default('password') }}">
+                  <!-- 所有td都在tr内部 -->
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <div class="flex items-center">
+                      <i class="fa fa-server text-primary text-lg mr-3"></i>
+                      <div>
+                        <div class="host-id text-sm font-medium text-dark" style="display: none;" >{{ host.id }}</div>
+                        <div class="host-name text-sm font-medium text-dark">{{ host.host_name }}</div>
+                        <div class="host-identifier text-xs text-secondary">{{ host.host_identifier }}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="host-ip px-6 py-4 whitespace-nowrap text-sm text-secondary">{{ host.ip_address }}</td>
+                  <td class="host-operating px-6 py-4 whitespace-nowrap text-sm text-secondary">{{ host.operating_system }}</td>
+                  <td class="host-created px-6 py-4 whitespace-nowrap text-sm text-secondary">{{ host.created_at }}</td>
+                  <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    <button class="text-primary hover:text-primary/80 mr-3 transition-colors">
+                      <i class="fa fa-fire"></i> 规则
+                    </button>
+                    <button class="text-warning hover:text-warning/80 mr-3 transition-colors edit-btn">
+                      <i class="fa fa-pencil"></i> 编辑
+                    </button>
+                    <button class="text-danger hover:text-red-700 transition-colors">
+                      <i class="fa fa-trash"></i> 删除
+                    </button>
+                  </td>
+                </tr> <!-- 闭合标签放在最后 -->
+              {% endfor %}
+              </tbody>
+            </table>
+
+            <!-- 分页 -->
+            <div class="px-6 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
+              <div class="text-sm text-secondary" id="showsum"
+                   data-start="{{ start }}"
+                   data-end="{{ end }}"
+                   data-sum="{{ sum }}">
+                  显示 {{ start }} 到 {{ end }} 条，共 {{ sum }} 条
+              </div>
+              <!-- 分页容器 -->
+                <div class="flex space-x-1" id="pagination"
+                     data-current-page="{{ current_page }}"
+                     data-total-pages="{{ total_pages }}">
+                  <!-- 上一页按钮 -->
+                  <button class="prev-btn px-3 py-1 rounded border border-gray-300 bg-white text-secondary hover:bg-gray-50 disabled:opacity-50">
+                    <i class="fa fa-chevron-left"></i>
+                  </button>
+
+                  <!-- 页码按钮容器（JS动态生成） -->
+                  <div class="page-numbers flex space-x-1"></div>
+
+                  <!-- 下一页按钮 -->
+                  <button class="next-btn px-3 py-1 rounded border border-gray-300 bg-white text-secondary hover:bg-gray-50 disabled:opacity-50">
+                    <i class="fa fa-chevron-right"></i>
+                  </button>
+                </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+  <!-- 添加/编辑主机模态框 -->
+  <div id="host-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto transform transition-all scale-95">
+      <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+        <h3 class="text-lg font-semibold" id="modal-title">添加主机</h3>
+        <button id="close-modal" class="text-gray-400 hover:text-gray-500">
+          <i class="fa fa-times"></i>
+        </button>
+      </div>
+
+      <div class="px-6 py-5">
+        <form id="host-form">
+          <input type="hidden" id="edit-id" value="">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+              <label for="host-name" class="block text-sm font-medium text-gray-700 mb-1">主机类组 <span class="text-danger">*</span></label>
+              <input type="text" id="host-name" name="host-name" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="例如：Web服务器">
+            </div>
+
+            <div>
+              <label for="host-id" class="block text-sm font-medium text-gray-700 mb-1">主机标识 <span class="text-danger">*</span></label>
+              <input type="text" id="host-id" name="host-id" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="例如：web-server-01">
+            </div>
+
+            <div>
+              <label for="ip-address" class="block text-sm font-medium text-gray-700 mb-1">IP地址 <span class="text-danger">*</span></label>
+              <input type="text" id="ip-address" name="ip-address" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="例如：192.168.1.100">
+            </div>
+
+            <div>
+              <label for="os-type" class="block text-sm font-medium text-gray-700 mb-1">操作系统 <span class="text-danger">*</span></label>
+              <select id="os-type" name="os-type" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                <option value="">请选择操作系统</option>
+                <option value="ubuntu">Ubuntu</option>
+                <option value="centos">CentOS</option>
+                <option value="debian">Debian</option>
+                <option value="fedora">Fedora</option>
+                <option value="redhat">RedHat</option>
+                <option value="other">其他</option>
+              </select>
+            </div>
+
+            <div>
+              <label for="ssh-port" class="block text-sm font-medium text-gray-700 mb-1">SSH端口</label>
+              <input type="number" id="ssh-port" name="ssh-port" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" value="22" min="1" max="65535">
+            </div>
+
+
+            <div class="md:col-span-2 bg-gray-50 p-4 rounded-lg">
+              <h4 class="font-medium mb-2">认证信息</h4>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label for="auth-username" class="block text-sm font-medium text-gray-700 mb-1">用户名</label>
+                  <input type="text" id="auth-username" name="auth-username" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="SSH用户名">
+                </div>
+
+                <div>
+                  <label for="auth-method" class="block text-sm font-medium text-gray-700 mb-1">认证方式</label>
+                  <select id="auth-method" name="auth-method" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                    <option value="password">密码</option>
+                    <option value="key">SSH密钥</option>
+                  </select>
+                </div>
+
+                <div id="password-field" class="md:col-span-2">
+                  <label for="auth-password" class="block text-sm font-medium text-gray-700 mb-1">密码</label>
+                  <input type="password" id="auth-password" name="auth-password" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="SSH登录密码">
+                </div>
+
+                <div id="key-field" class="md:col-span-2 hidden">
+                  <label for="auth-key" class="block text-sm font-medium text-gray-700 mb-1">SSH密钥</label>
+                  <textarea id="auth-key" name="auth-key" rows="4" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="私钥内容"></textarea>
+                </div>
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end space-x-3">
+        <button id="cancel-btn" class="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-100 transition-colors">取消</button>
+        <button id="save-btn" class="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary/90 transition-colors">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 提示消息（初始无show类，默认隐藏） -->
+  <div id="success-toast" class="toast bg-success text-white">
+    <i class="fa fa-check-circle mr-2"></i>
+    <span>操作成功！</span>
+  </div>
+  <div id="error-toast" class="toast bg-danger text-white">
+    <i class="fa fa-times-circle mr-2"></i>
+    <span>操作失败，请重试！</span>
+  </div>
+
+{% endblock main %}
+
+{% block script %}
+<script>
+// 初始化分页
+function initPagination() {
+  // 获取容器和参数（从data属性中读取后端传递的值）
+  const pagination = document.getElementById('pagination');
+  const currentPage = parseInt(pagination.dataset.currentPage); // 当前页（如1）
+  const totalPages = parseInt(pagination.dataset.totalPages);   // 总页数（如10）
+  const pageNumbersContainer = document.querySelector('.page-numbers'); // 页码容器
+  const prevBtn = document.querySelector('.prev-btn'); // 上一页按钮
+  const nextBtn = document.querySelector('.next-btn'); // 下一页按钮
+
+  // 最多显示5个页码（可自定义）
+  const maxVisiblePages = 5;
+
+
+  // 1. 计算需要显示的页码范围（startPage ~ endPage）
+  let startPage, endPage;
+  if (totalPages <= maxVisiblePages) {
+    // 总页数 ≤ 最大显示数：全部显示
+    startPage = 1;
+    endPage = totalPages;
+  } else {
+    // 总页数 > 最大显示数：动态计算范围
+    const half = Math.floor(maxVisiblePages / 2);
+    if (currentPage <= half) {
+      // 当前页靠前：显示1 ~ maxVisiblePages
+      startPage = 1;
+      endPage = maxVisiblePages;
+    } else if (currentPage >= totalPages - half) {
+      // 当前页靠后：显示最后maxVisiblePages个
+      startPage = totalPages - maxVisiblePages + 1;
+      endPage = totalPages;
+    } else {
+      // 当前页中间：显示当前页前后各half个
+      startPage = currentPage - half;
+      endPage = currentPage + half;
+    }
+  }
+
+
+  // 2. 生成页码按钮
+  function renderPageNumbers() {
+    pageNumbersContainer.innerHTML = ''; // 清空现有按钮
+    for (let i = startPage; i <= endPage; i++) {
+      const btn = document.createElement('button');
+      btn.className = `px-3 py-1 rounded border ${
+        i === currentPage
+          ? 'border-primary bg-primary text-white'  // 当前页样式
+          : 'border-gray-300 bg-white text-secondary hover:bg-gray-50'  // 其他页样式
+      }`;
+      btn.textContent = i;
+      // 点击页码：跳转到对应页
+      btn.addEventListener('click', () => {
+        navigateToPage(i);
+      });
+      pageNumbersContainer.appendChild(btn);
+    }
+  }
+
+
+  // 3. 上一页/下一页逻辑
+  function updateNavButtons() {
+    // 上一页：第1页禁用
+    prevBtn.disabled = currentPage === 1;
+    prevBtn.addEventListener('click', () => {
+      if (currentPage > 1) {
+        navigateToPage(currentPage - 1);
+      }
+    });
+
+    // 下一页：最后一页禁用
+    nextBtn.disabled = currentPage === totalPages;
+    nextBtn.addEventListener('click', () => {
+      if (currentPage < totalPages) {
+        navigateToPage(currentPage + 1);
+      }
+    });
+  }
+
+
+  // 4. 跳转至指定页（更新URL的page参数）
+  function navigateToPage(page) {
+    // 构造新URL（替换或添加page参数）
+    const url = new URL(window.location.href);
+    url.searchParams.set('page', page); // 更新page参数
+    // 保留搜索参数（如果存在）
+    const currentSearch = url.searchParams.get('search');
+    if (currentSearch) {
+      url.searchParams.set('search', currentSearch);
+    }
+    window.location.href = url.toString(); // 跳转
+  }
+
+
+  // 初始化渲染
+  renderPageNumbers();
+  updateNavButtons();
+}
+
+// 页面加载后初始化分页
+window.addEventListener('DOMContentLoaded', initPagination);
+// 显示条数
+const showsum = document.getElementById('showsum');
+
+// 从模板中获取变量值（假设这些值已通过Jinja2渲染到页面中）
+// 这里使用data属性存储原始值，便于JavaScript获取
+const start = parseInt(showsum.dataset.start);
+const end = parseInt(showsum.dataset.end);
+const sum = parseInt(showsum.dataset.sum);
+
+// 根据sum和end的关系生成不同的显示内容
+let displayText;
+if (sum > end) {
+    displayText = `显示 ${start} 到 ${end} 条，共 ${sum} 条`;
+} else {
+    displayText = `显示 ${start} 到 ${sum} 条，共 ${sum} 条`;
+}
+
+// 更新显示内容
+showsum.textContent = displayText;
+// 新增：搜索功能
+const searchForm = document.getElementById('search-form');
+const searchInput = document.querySelector('input[name="search"]');
+const clearSearchBtn = document.getElementById('clear-search');
+// 搜索表单提交处理
+if (searchForm) {
+  searchForm.addEventListener('submit', function(e) {
+    e.preventDefault();
+    const keyword = searchInput.value.trim();
+
+    const url = new URL(window.location);
+    if (keyword) {
+      url.searchParams.set('search', keyword);
+    } else {
+      url.searchParams.delete('search');
+    }
+    url.searchParams.set('page', '1'); // 搜索时重置到第1页
+    window.location.href = url.toString();
+  });
+}
+// 清除搜索按钮处理
+if (clearSearchBtn) {
+  clearSearchBtn.addEventListener('click', function() {
+    const url = new URL(window.location);
+    url.searchParams.delete('search');
+    url.searchParams.set('page', '1');
+    window.location.href = url.toString();
+  });
+}
+
+
+  // 认证方式切换
+  const authMethod = document.getElementById('auth-method');
+  const passwordField = document.getElementById('password-field');
+  const keyField = document.getElementById('key-field');
+
+  authMethod.addEventListener('change', () => {
+    if (authMethod.value === 'password') {
+      passwordField.classList.remove('hidden');
+      keyField.classList.add('hidden');
+    } else {
+      passwordField.classList.add('hidden');
+      keyField.classList.remove('hidden');
+    }
+  });
+
+  // 模态框交互
+  const modal = document.getElementById('host-modal');
+  const addHostBtn = document.getElementById('add-host-btn');
+  const closeModalBtn = document.getElementById('close-modal');
+  const cancelBtn = document.getElementById('cancel-btn');
+  const saveBtn = document.getElementById('save-btn');
+  const modalTitle = document.getElementById('modal-title');
+  const hostsTableBody = document.getElementById('hosts-table-body');
+
+  // 打开新增主机模态框
+  addHostBtn.addEventListener('click', () => {
+    modalTitle.textContent = '添加主机';
+    document.getElementById('host-form').reset();
+    passwordField.classList.remove('hidden');
+    keyField.classList.add('hidden');
+    modal.classList.remove('hidden');
+    // 显示模态框时添加动画效果
+    setTimeout(() => {
+      modal.querySelector('div').classList.add('scale-100');
+      modal.querySelector('div').classList.remove('scale-95');
+    }, 10);
+  });
+
+  // 关闭模态框的函数
+  const closeModal = () => {
+    modal.querySelector('div').classList.remove('scale-100');
+    modal.querySelector('div').classList.add('scale-95');
+    setTimeout(() => {
+      modal.classList.add('hidden');
+    }, 200);
+  };
+
+  closeModalBtn.addEventListener('click', closeModal);
+  cancelBtn.addEventListener('click', closeModal);
+
+  // 点击模态框外部关闭
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      closeModal();
+    }
+  });
+
+  // 显示提示消息并自动隐藏
+  function showToast(toastId) {
+    const toast = document.getElementById(toastId);
+    if (!toast) return;
+
+    // 移除可能存在的show类，强制重绘
+    toast.classList.remove('show');
+    setTimeout(() => {
+      // 添加show类显示提示
+      toast.classList.add('show');
+
+      // 3秒后自动隐藏
+      setTimeout(() => {
+        toast.classList.remove('show');
+      }, 3000);
+    }, 10);
+  }
+
+// 保存主机 - 发送AJAX请求（同时支持新增和编辑）
+saveBtn.addEventListener('click', () => {
+  // 获取编辑ID（新增时为空，编辑时有值）
+  const editId = document.getElementById('edit-id').value;
+
+  // 获取表单数据
+  const formData = {
+    id: editId, // 编辑时传递主机ID，新增时为空
+    host_name: document.getElementById('host-name').value,
+    host_identifier: document.getElementById('host-id').value,
+    ip_address: document.getElementById('ip-address').value,
+    operating_system: document.getElementById('os-type').value,
+    ssh_port: document.getElementById('ssh-port').value || 26,
+    username: document.getElementById('auth-username').value,
+    auth_method: document.getElementById('auth-method').value,
+    password: document.getElementById('auth-method').value === 'password'
+      ? document.getElementById('auth-password').value
+      : null,
+    private_key: document.getElementById('auth-method').value === 'key'
+      ? document.getElementById('auth-key').value
+      : null
+  };
+
+  // 简单验证
+  if (!formData.host_name || !formData.host_identifier || !formData.ip_address || !formData.operating_system) {
+    alert('请填写必填字段');
+    return;
+  }
+
+  // 根据是否有编辑ID决定请求URL（新增：/host_add，编辑：/host_update）
+  const url = editId ? '/host_update' : '/host_add';
+
+  // 发送POST请求
+  fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      // 注意：如果有CSRF保护，需要添加CSRF令牌头部
+      // 'X-CSRFToken': getCSRFToken() // 需实现获取CSRF令牌的函数
+    },
+    body: JSON.stringify(formData)
+  })
+  .then(response => {
+    if (!response.ok) {
+      throw new Error('网络响应不正常');
+    }
+    return response.json();
+  })
+  .then(data => {
+    if (data.success) {
+      // 显示成功提示
+      showToast('success-toast');
+      // 刷新页面获取最新数据
+      window.location.reload();
+      // 关闭模态框
+      closeModal();
+    } else {
+      showToast('error-toast');
+    }
+  })
+  .catch(error => {
+    console.error('错误:', error);
+    showToast('error-toast');
+  });
+});
+
+// 编辑按钮交互
+document.querySelectorAll('button:has(.fa-pencil)').forEach(btn => {
+  btn.addEventListener('click', () => {
+    modalTitle.textContent = '编辑主机';
+    // 1. 获取当前点击的主机行数据
+    const tr = btn.closest('tr'); // 找到当前按钮所在的<tr>
+    const hostData = tr.dataset; // 获取<tr>上的所有data-*属性
+    console.log(hostData)
+    // 2. 填充表单数据
+    document.getElementById('edit-id').value = hostData.id; // 存储主机ID（用于更新）
+    document.getElementById('host-name').value = hostData.hostName;
+    document.getElementById('host-id').value = hostData.hostIdentifier;
+    document.getElementById('ip-address').value = hostData.ipAddress;
+    document.getElementById('os-type').value = hostData.os;
+    document.getElementById('ssh-port').value = hostData.sshPort;
+    document.getElementById('auth-username').value = hostData.authUsername;
+    document.getElementById('auth-method').value = hostData.authMethod;
+
+
+    // 3. 根据认证方式切换显示密码/密钥字段
+    if (hostData.authMethod === 'password') {
+      passwordField.classList.remove('hidden');
+      keyField.classList.add('hidden');
+    } else {
+      passwordField.classList.add('hidden');
+      keyField.classList.remove('hidden');
+    }
+
+    // 4. 显示模态框
+    modal.classList.remove('hidden');
+    setTimeout(() => {
+      modal.querySelector('div').classList.add('scale-100');
+      modal.querySelector('div').classList.remove('scale-95');
+    }, 10);
+  });
+});
+
+
+    // 删除按钮交互
+    document.querySelectorAll('button:has(.fa-trash)').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (confirm('确定要删除这台主机吗？')) {
+        const row = btn.closest('tr');
+        const idElement = row.querySelector('.host-id'); // 查找当前行内的隐藏id元素
+
+        // 获取host.id的值
+        const hostId = idElement.textContent.trim();
+          // 发送删除请求（通过URL参数传递id）
+          fetch(`/host_del?id=${hostId}`, { // 在URL中携带id参数
+            method: 'DELETE'
+          })
+          .then(response => {
+            if (response.ok) {
+              // 刷新当前页面，重新从后端获取最新数据
+              window.location.reload();
+              showToast('success-toast');
+            } else {
+              showToast('error-toast');
+            }
+          })
+          .catch(error => {
+            console.error('删除请求失败:', error);
+            showToast('error-toast');
+          });
+        }
+      });
+    });
+
+    // 规则按钮交互
+    document.querySelectorAll('button:has(.fa-fire)').forEach(btn => {
+      btn.addEventListener('click', () => {
+        // 跳转到该主机的规则管理页面
+        const row = btn.closest('tr');
+        const idElement = row.querySelector('.host-id'); // 查找当前行内的隐藏id元素
+        const hostId = idElement.textContent.trim();
+        window.location.href = `/rules_in?host_id=${hostId}`;
+      });
+    });
+
+</script>
+</body>
+</html>
+{% endblock script %}

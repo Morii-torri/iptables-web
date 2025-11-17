@@ -1,0 +1,970 @@
+{% extends 'base.html' %}
+{% block main %}
+    <!-- 主内容区 -->
+    <div class="flex-1 flex flex-col overflow-hidden">
+      <!-- 顶部导航栏 -->
+      <header class="bg-white border-b border-gray-200 shadow-sm z-10">
+        <div class="flex items-center justify-between h-16 px-6">
+          <!-- 移动端菜单按钮 -->
+          <button id="mobile-menu-btn" class="md:hidden text-gray-500 hover:text-gray-700">
+            <i class="fa fa-bars text-xl"></i>
+          </button>
+          <!-- 搜索框 -->
+          <div class="flex-1 max-w-md mx-4 hidden md:block">
+            <form id="search-form" class="relative">
+              <!-- 搜索图标按钮 -->
+              <button type="submit" class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-400 hover:text-primary transition-colors">
+                <i class="fa fa-search"></i>
+              </button>
+
+              <!-- 搜索输入框 -->
+              <input
+                type="text"
+                name="search"
+                class="block w-full pl-10 pr-10 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-primary focus:border-primary sm:text-sm"
+                placeholder="搜索模板、标签..."
+                value="{{ search_keyword|default('') }}">  <!-- 保留搜索关键词 -->
+
+              <!-- 清除按钮（仅在有搜索内容时显示） -->
+              {% if search_keyword %}
+                <button type="button" id="clear-search" class="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600">
+                  <i class="fa fa-times-circle"></i>
+                </button>
+              {% endif %}
+            </form>
+          </div>
+          <!-- 右侧工具栏 -->
+          <div class="flex items-center space-x-4">
+            <button class="text-gray-500 hover:text-gray-700 relative"
+                    onclick="window.location.href='/logout'">
+              <span class="flex items-center">
+                <i class="fa fa-sign-out text-xl mr-1"></i>
+                <span class="text-sm">退出登录</span>
+              </span>
+            </button>
+            <button class="text-gray-500 hover:text-gray-700">
+              <i class="fa fa-question-circle text-xl"></i>
+            </button>
+            <div class="hidden md:block h-6 w-px bg-gray-300"></div>
+            <button class="md:hidden text-gray-500 hover:text-gray-700">
+              <i class="fa fa-search text-xl"></i>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- 页面内容 -->
+      <main class="flex-1 overflow-y-auto bg-gray-50 p-6">
+        <div class="container mx-auto max-w-7xl">
+          <!-- 页面标题和操作区 -->
+          <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+            <div>
+              <h1 class="text-[clamp(1.5rem,3vw,2.5rem)] font-bold text-dark mb-2">模板管理</h1>
+              <p class="text-secondary">管理防火墙规则模板，快速应用到多个主机</p>
+            </div>
+
+
+              <button id="add-template-btn" class="bg-primary text-white px-5 py-2 rounded-lg font-medium flex items-center btn-hover">
+                <i class="fa fa-plus mr-2"></i> 新建模板
+              </button>
+            </div>
+          </div>
+          <!-- 新增：搜索结果提示 -->
+          {% if search_keyword %}
+          <div class="mb-4 flex items-center text-sm text-secondary">
+            <i class="fa fa-search mr-2"></i>
+            <span>搜索关键词: "<strong>{{ search_keyword }}</strong>"，找到 {{ sum }} 条结果</span>
+            <a href="{{ url_for('templates', page=1) }}" class="ml-4 text-primary hover:underline text-sm">
+              <i class="fa fa-times-circle mr-1"></i> 清除搜索
+            </a>
+          </div>
+          {% endif %}
+          <!-- 模板列表 - 卡片视图 -->
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {% for data in data_list %}
+            <!-- 模板卡片 -->
+            <div class="bg-white rounded-xl card-shadow overflow-hidden hover:shadow-lg transition-shadow" data-template-id="{{ data.template_id }}">
+              <div class="p-5 border-b border-gray-100">
+                <div class="flex justify-between items-start mb-3">
+                  <div>
+                    <h3 class="font-semibold text-lg">{{ data.template_name }}</h3>
+                    <p class="text-sm text-secondary mt-1">{{ data.template_identifier }} </p>
+                  </div>
+                </div>
+
+                <div class="flex flex-wrap gap-2 mb-4">
+                  <span class="template-tag bg-purple-100 text-purple-800">{{ data.rules|length }} 条规则</span>
+                  <span class="template-tag bg-green-100 text-green-800">
+                    {% if data.direction == 'INPUT' %}入方向{% else %}出方向{% endif %}
+                  </span>
+                </div>
+
+                <div class="flex items-center text-sm text-secondary">
+                  <div class="flex items-center mr-4">
+                    <i class="fa fa-calendar-o mr-1"></i>
+                    <span>更新于 {{ data.updated_at }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="p-4 bg-gray-50 flex justify-between">
+                <!-- 查看详情按钮 - 添加data属性存储模板数据 -->
+                <button class="text-primary hover:text-primary/80 text-sm font-medium transition-colors view-detail-btn"
+                        data-template-id="{{ data.template_id }}"
+                        data-template-name="{{ data.template_name }}"
+                        data-template-desc="{{ data.description|default('') }}"
+                        data-template-direction="{{ data.direction|default('INPUT') }}">
+                  <i class="fa fa-eye mr-1"></i> 查看详情
+                </button>
+                <div class="flex gap-2">
+                  <button class="px-3 py-1 bg-red-500 text-gray-700 rounded text-sm hover:bg-gray-300 transition-colors delete-template-btn">
+                    <i class="fa fa-trash mr-1"></i> 删除
+                  </button>
+                  <button class="px-3 py-1 bg-primary text-white rounded text-sm hover:bg-primary/90 transition-colors apply-template-btn">
+                    <i class="fa fa-rocket mr-1"></i> 应用
+                  </button>
+                </div>
+              </div>
+          </div>
+            {% endfor %}
+        </div>
+
+      </main>
+    </div>
+  </div>
+
+  <!-- 新建/编辑模板模态框（z-index: 50） -->
+  <div id="template-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-xl w-full max-w-3xl max-h-[90vh] overflow-y-auto transform transition-all scale-95">
+      <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+        <h3 class="text-lg font-semibold" id="modal-title">新建模板</h3>
+        <button id="close-modal" class="text-gray-400 hover:text-gray-500">
+          <i class="fa fa-times"></i>
+        </button>
+      </div>
+
+      <div class="px-6 py-5">
+        <form id="template-form">
+          <!-- 添加隐藏字段存储模板ID -->
+          <input type="hidden" id="template-id" name="template-id">
+
+          <div class="mb-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label for="template-name" class="block text-sm font-medium text-gray-700 mb-1">模板名称 <span class="text-danger">*</span></label>
+                <input type="text" id="template-name" name="template-name" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="例如：Web服务器安全模板">
+              </div>
+
+              <!-- 方向选择下拉框 -->
+              <div id="direction-select-container">
+                <label for="rule-direction" class="block text-sm font-medium text-gray-700 mb-1">规则方向 <span class="text-danger">*</span></label>
+                <select id="rule-direction" name="rule-direction" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                  <option value="INPUT">INPUT（入站）</option>
+                  <option value="OUTPUT">OUTPUT（出站）</option>
+                </select>
+              </div>
+
+              <div class="md:col-span-2">
+                <label for="template-description" class="block text-sm font-medium text-gray-700 mb-1">模板描述</label>
+                <textarea id="template-description" name="template-description" rows="2" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="模板的详细描述信息"></textarea>
+              </div>
+            </div>
+
+            <div class="mb-6">
+              <div class="flex justify-between items-center mb-3">
+                <h4 class="font-medium">模板规则列表</h4>
+                <button type="button" id="add-rule-to-template" class="text-sm text-primary hover:text-primary/80 flex items-center">
+                  <i class="fa fa-plus-circle mr-1"></i> 添加规则
+                </button>
+              </div>
+
+              <!-- 规则列表（动态填充） -->
+              <div class="border border-gray-200 rounded-lg overflow-hidden">
+                <table class="min-w-full divide-y divide-gray-200">
+                  <thead class="bg-gray-50">
+                    <tr>
+                      <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-1/12">序号</th>
+                      <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-2/12">授权策略</th>
+                      <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-2/12">协议</th>
+                      <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-2/12">端口</th>
+                      <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-2/12">授权对象</th>
+                      <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-2/12">描述</th>
+                      <th scope="col" class="px-4 py-3 text-right text-xs font-semibold text-secondary uppercase tracking-wider w-1/12">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody class="bg-white divide-y divide-gray-200" id="rules-table-body">
+                    <!-- 规则将通过JavaScript动态填充 -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end space-x-3">
+        <button id="cancel-btn" class="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-100 transition-colors">取消</button>
+        <button id="save-btn" class="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary/90 transition-colors">保存模板</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 添加规则的子模态框 -->
+  <div id="add-rule-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-200 hidden">
+    <div class="bg-white rounded-xl w-full max-w-xl max-h-[80vh] overflow-y-auto transform transition-all scale-95 relative">
+      <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+        <h3 class="text-lg font-semibold">添加规则</h3>
+        <button id="close-add-rule-modal" class="text-gray-400 hover:text-gray-500">
+          <i class="fa fa-times"></i>
+        </button>
+      </div>
+
+      <div class="px-6 py-5">
+        <form id="add-rule-form">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+              <label for="rule-policy" class="block text-sm font-medium text-gray-700 mb-1">授权策略 <span class="text-danger">*</span></label>
+              <select id="rule-policy" name="rule-policy" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                <option value="允许">允许</option>
+                <option value="拒绝">拒绝</option>
+              </select>
+            </div>
+
+            <div>
+              <label for="rule-protocol" class="block text-sm font-medium text-gray-700 mb-1">协议 <span class="text-danger">*</span></label>
+              <select id="rule-protocol" name="rule-protocol" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                <option value="TCP">TCP</option>
+                <option value="UDP">UDP</option>
+                <option value="ALL">ALL</option>
+              </select>
+            </div>
+
+            <div>
+              <label for="rule-port" class="block text-sm font-medium text-gray-700 mb-1">端口 <span class="text-danger">*</span></label>
+              <input type="text" id="rule-port" name="rule-port" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="例如：80 或 80:90 或 80,443">
+            </div>
+            <div>
+
+              <label for="rule-object" class="block text-sm font-medium text-gray-700 mb-1">授权对象 <span class="text-danger">*</span></label>
+              <input type="text" id="rule-object" name="rule-object" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="例如：0.0.0.0/0 或 192.168.1.0/24">
+            </div>
+
+            <div class="md:col-span-2">
+              <label for="rule-desc" class="block text-sm font-medium text-gray-700 mb-1">描述</label>
+              <input type="text" id="rule-desc" name="rule-desc" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="规则的详细描述">
+            </div>
+            <!-- 新增：限速输入框 -->
+            <div class="md:col-span-2">
+              <label for="rule-limit" class="block text-sm font-medium text-gray-700 mb-1">限制速率（kb/s，留空表示不限速）</label>
+              <div class="flex items-center">
+                <input type="number" id="rule-limit" name="rule-limit" min="1" class="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="输入速率值">
+                <span class="ml-2 text-gray-700">kb/s</span>
+              </div>
+            </div>
+
+          </div>
+        </form>
+      </div>
+
+      <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end space-x-3">
+        <button id="cancel-add-rule-btn" class="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-100 transition-colors">取消</button>
+        <button id="confirm-add-rule-btn" class="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary/90 transition-colors">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 应用模板模态框 -->
+  <div id="apply-template-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto transform transition-all scale-95">
+      <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+        <h3 class="text-lg font-semibold">应用模板到主机</h3>
+        <button id="close-apply-modal" class="text-gray-400 hover:text-gray-500">
+          <i class="fa fa-times"></i>
+        </button>
+      </div>
+
+      <div class="px-6 py-5">
+        <div class="mb-4">
+          <h4 class="font-medium mb-2">模板信息</h4>
+          <div class="bg-gray-50 p-3 rounded-lg">
+            <div class="font-medium" id="apply-template-name">Web服务器安全模板</div>
+            <div class="text-sm text-secondary mt-1" id="apply-template-desc">适用于Nginx/Apache服务器的标准防护规则</div>
+          </div>
+        </div>
+
+        <div class="mb-4">
+          <div class="flex justify-between items-center mb-3">
+            <h4 class="font-medium">选择目标主机</h4>
+            <button type="button" id="select-all-hosts" class="text-sm text-primary hover:text-primary/80">
+              <i class="fa fa-check-square-o mr-1"></i> 全选
+            </button>
+          </div>
+
+          <div class="border border-gray-200 rounded-lg max-h-60 overflow-y-auto" id="hosts-list-container">
+            <!-- 主机列表将通过JS动态加载 -->
+          </div>
+        </div>
+      </div>
+
+      <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end space-x-3">
+        <button id="cancel-apply-btn" class="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-100 transition-colors">取消</button>
+        <button id="confirm-apply-btn" class="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary/90 transition-colors">确认应用</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 加载指示器模板 (不会直接显示，用于动态创建) -->
+  <div id="hosts-loading-template" class="hidden">
+    <div class="p-3 text-center text-gray-500 hosts-loading">
+      加载主机列表中...
+    </div>
+  </div>
+{% endblock main %}
+
+{% block script %}
+  <script>
+    // 模态框元素
+    const templateModal = document.getElementById('template-modal');
+    const applyTemplateModal = document.getElementById('apply-template-modal');
+    const addRuleModal = document.getElementById('add-rule-modal');
+    const addTemplateBtn = document.getElementById('add-template-btn');
+    const closeModalBtn = document.getElementById('close-modal');
+    const cancelBtn = document.getElementById('cancel-btn');
+    const saveBtn = document.getElementById('save-btn');
+    const modalTitle = document.getElementById('modal-title');
+    const directionSelectContainer = document.getElementById('direction-select-container');
+    const rulesTableBody = document.getElementById('rules-table-body');
+    const templateForm = document.getElementById('template-form');
+
+    // 当前应用的模板ID
+    let currentTemplateId = null;
+
+    // 模板表单字段
+    const templateIdInput = document.getElementById('template-id');
+    const templateNameInput = document.getElementById('template-name');
+    const templateDescriptionInput = document.getElementById('template-description');
+    const ruleDirectionSelect = document.getElementById('rule-direction');
+
+    // 所有模板数据 - 从Flask后端获取
+    const allTemplates = {% if data_list %}{{ data_list|tojson }}{% else %}[]{% endif %};
+    // 新增：搜索功能实现
+    const searchForm = document.getElementById('search-form');
+    const searchInput = document.querySelector('input[name="search"]');
+    const clearSearchBtn = document.getElementById('clear-search');
+    // 搜索表单提交处理
+    if (searchForm) {
+      searchForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        const keyword = searchInput.value.trim();
+
+        // 构建新URL
+        const url = new URL(window.location);
+        if (keyword) {
+          url.searchParams.set('search', keyword);
+        } else {
+          url.searchParams.delete('search');
+        }
+        url.searchParams.set('page', '1'); // 搜索时重置到第1页
+        window.location.href = url.toString();
+      });
+    }
+
+    // 清除搜索按钮处理
+    if (clearSearchBtn) {
+      clearSearchBtn.addEventListener('click', function() {
+        const url = new URL(window.location);
+        url.searchParams.delete('search');
+        url.searchParams.set('page', '1');
+        window.location.href = url.toString();
+      });
+    }
+    // 打开新建模板模态框
+    function openNewTemplateModal() {
+      // 重置表单
+      templateForm.reset();
+      templateIdInput.value = ''; // 清空模板ID
+      modalTitle.textContent = '新建模板';
+      templateModal.classList.remove('hidden');
+      directionSelectContainer.classList.remove('hidden'); // 显示方向选择
+      rulesTableBody.innerHTML = ''; // 清空规则列表
+
+      // 显示模态框动画
+      setTimeout(() => {
+        templateModal.querySelector('div').classList.add('scale-100');
+        templateModal.querySelector('div').classList.remove('scale-95');
+      }, 10);
+    }
+
+    addTemplateBtn.addEventListener('click', openNewTemplateModal);
+
+    // 关闭模板模态框
+    function closeTemplateModal() {
+      templateModal.querySelector('div').classList.remove('scale-100');
+      templateModal.querySelector('div').classList.add('scale-95');
+      setTimeout(() => {
+        templateModal.classList.add('hidden');
+        if (!addRuleModal.classList.contains('hidden')) {
+          closeAddRuleModal();
+        }
+      }, 200);
+    }
+
+    closeModalBtn.addEventListener('click', closeTemplateModal);
+    cancelBtn.addEventListener('click', closeTemplateModal);
+
+    // 点击模板模态框外部关闭
+    templateModal.addEventListener('click', (e) => {
+      if (e.target === templateModal) {
+        closeTemplateModal();
+      }
+    });
+
+    // 保存模板
+    saveBtn.addEventListener('click', async () => {
+      // 收集表单数据
+      const templateData = {
+        temp_id: templateIdInput.value || null, // 使用temp_id与后端保持一致
+        name: templateNameInput.value,
+        direction: ruleDirectionSelect.value,
+        description: templateDescriptionInput.value,
+        rules: []
+      };
+
+      // 验证必填字段
+      if (!templateData.name) {
+        alert('模板名称为必填项');
+        return;
+      }
+
+      if (!templateData.direction) {
+        alert('请选择规则方向');
+        return;
+      }
+
+      // 收集规则列表数据
+      const ruleRows = rulesTableBody.querySelectorAll('tr');
+      if (ruleRows.length === 0) {
+        alert('请至少添加一条规则');
+        return;
+      }
+
+      ruleRows.forEach((row) => {
+        const cells = row.querySelectorAll('td');
+        const policy = cells[1].querySelector('span').textContent;
+        const protocol = cells[2].textContent;
+        const port = cells[3].textContent;
+        const object = cells[4].textContent;
+        // 新增：解析描述中的限速信息和纯描述文本
+        const descCell = cells[5];
+        const tachometerIcon = descCell.querySelector('.fa-tachometer');
+        let limit = '';
+        let description = '';
+
+        if (tachometerIcon) {
+          // 提取限速值
+          limit = tachometerIcon.parentElement.textContent.trim();
+          // 提取描述文本
+          const descSpan = descCell.querySelector('.text-gray-600');
+          description = descSpan ? descSpan.textContent.replace('- ', '').trim() : '';
+        } else {
+          description = descCell.textContent.trim() !== '-' ? descCell.textContent.trim() : '';
+        }
+
+        // 存储rule_id，如果是新规则则为null
+        const ruleId = row.getAttribute('data-rule-id') || null;
+        // 新增：获取限速信息
+        const ruleLimit = row.getAttribute('data-rule-limit') || '';
+
+        templateData.rules.push({
+          rule_id: ruleId, // 包含rule_id以便后端处理
+          policy: policy,
+          protocol: protocol,
+          port: port,
+          auth_object: object,
+          description: description,
+          // 新增：添加限速字段
+          limit: ruleLimit
+        });
+      });
+
+      try {
+        // 确定API端点和请求方法
+        const url = templateData.temp_id ? '/temp_edit' : '/temp_add';
+        const method = 'POST';
+
+        const response = await fetch(url, {
+          method: method,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCookie('csrf_token')
+          },
+          body: JSON.stringify(templateData)
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+          alert(templateData.temp_id ? '模板更新成功！' : '模板保存成功！');
+          closeTemplateModal();
+          window.location.reload();
+        } else {
+          alert(`操作失败: ${result.message || '服务器处理错误'}`);
+        }
+      } catch (error) {
+        console.error('操作模板时发生错误:', error);
+        alert('操作模板失败，请检查网络连接后重试');
+      }
+    });
+
+    // 获取CSRF令牌
+    function getCookie(name) {
+      let cookieValue = null;
+      if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+          const cookie = cookies[i].trim();
+          if (cookie.substring(0, name.length + 1) === (name + '=')) {
+            cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+            break;
+          }
+        }
+      }
+      return cookieValue;
+    }
+
+    // ========== 查看模板详情逻辑 ==========
+    // 为所有查看详情按钮绑定事件
+    document.querySelectorAll('.view-detail-btn').forEach(btn => {
+      btn.addEventListener('click', function() {
+        // 获取按钮上的模板ID（字符串类型）
+        const templateId = this.getAttribute('data-template-id');
+
+        // 从所有模板数据中找到当前模板 - 注意转换为相同类型比较
+        const templateData = allTemplates.find(tpl => {
+          // 将两者都转换为数字类型进行比较
+          return Number(tpl.template_id) === Number(templateId);
+        });
+
+        if (templateData) {
+          console.log('找到模板数据:', templateData);
+          fillTemplateDetail(templateData);
+        } else {
+          console.error('未找到模板数据，ID:', templateId);
+          alert('未找到模板数据');
+        }
+      });
+    });
+
+    // 填充模板详情到模态框（支持编辑）
+    function fillTemplateDetail(templateData) {
+      // 设置模态框标题为模板详情
+      modalTitle.textContent = '模板详情';
+      templateIdInput.value = templateData.template_id;
+      templateNameInput.value = templateData.template_name;
+      templateDescriptionInput.value = templateData.template_identifier || '';
+      // 设置方向
+      ruleDirectionSelect.value = templateData.direction || 'INPUT';
+
+      // 显示方向选择下拉框，允许编辑
+      directionSelectContainer.classList.add('hidden');
+
+      // 清空现有规则并填充新规则
+      rulesTableBody.innerHTML = '';
+      if (templateData.rules && templateData.rules.length > 0) {
+        templateData.rules.forEach((rule, index) => {
+          // 处理可能的字段拼写错误
+          const policy = rule.policy || rule.cy; // 处理数据中的"cy"可能是"policy"的笔误
+          const policyClass = policy === 'ACCEPT' ? 'bg-green-100 text-success' : 'bg-red-100 text-danger';
+
+          // 新增：处理限速信息
+          const limit = rule.limit || '';
+          const description = rule.description || '';
+
+          // 构建描述内容，包含限速信息（如果有）
+          let descContent = '';
+          if (limit) {
+            descContent = `
+              <span class="inline-flex items-center mr-2" style="color: #3B82F6;">
+                <i class="fa fa-tachometer mr-1"></i>
+                ${limit}
+              </span>
+            `;
+            if (description) {
+              descContent += `<span class="text-gray-600">- ${description}</span>`;
+            }
+          } else {
+            descContent = description || '-';
+          }
+
+          const newRow = document.createElement('tr');
+          // 存储rule_id用于更新
+          newRow.setAttribute('data-rule-id', rule.rule_id || '');
+
+          // 新增：存储限速信息
+          newRow.setAttribute('data-rule-limit', limit);
+
+          newRow.innerHTML = `
+            <td class="px-4 py-3 whitespace-nowrap text-sm text-secondary">${index + 1}</td>
+            <td class="px-4 py-3 whitespace-nowrap text-sm">
+              <span class="px-2 py-1 text-xs rounded-full ${policyClass}">${policy}</span>
+            </td>
+            <td class="px-4 py-3 whitespace-nowrap text-sm text-secondary">${rule.protocol || '-'}</td>
+            <td class="px-4 py-3 whitespace-nowrap text-sm text-secondary">${rule.port || '-'}</td>
+            <td class="px-4 py-3 text-sm text-secondary">${rule.auth_object || rule.auth_objec || '-'}</td> <!-- 处理可能的拼写错误 -->
+            <td class="px-4 py-3 text-sm text-secondary">
+              ${descContent}
+            </td>
+            <td class="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
+              <button class="text-danger hover:text-red-700 transition-colors delete-rule">
+                <i class="fa fa-trash"></i>
+              </button>
+            </td>
+          `;
+
+          rulesTableBody.appendChild(newRow);
+
+          // 绑定删除事件
+          newRow.querySelector('.delete-rule').addEventListener('click', function() {
+            newRow.remove();
+            updateRuleIndexes();
+          });
+        });
+      }
+
+      // 显示模态框
+      templateModal.classList.remove('hidden');
+      setTimeout(() => {
+        templateModal.querySelector('div').classList.add('scale-100');
+        templateModal.querySelector('div').classList.remove('scale-95');
+      }, 10);
+    }
+
+    // ========== 添加规则相关逻辑 ==========
+    // 打开添加规则模态框
+    document.getElementById('add-rule-to-template').addEventListener('click', () => {
+      templateModal.style.zIndex = "50";
+      addRuleModal.style.zIndex = "200";
+
+      addRuleModal.classList.remove('hidden');
+      document.getElementById('add-rule-form').reset();
+
+      setTimeout(() => {
+        addRuleModal.querySelector('div').classList.add('scale-100');
+        addRuleModal.querySelector('div').classList.remove('scale-95');
+      }, 10);
+
+      templateModal.querySelector('.bg-black').classList.add('bg-opacity-30');
+    });
+
+    // 关闭添加规则模态框
+    function closeAddRuleModal() {
+      addRuleModal.querySelector('div').classList.remove('scale-100');
+      addRuleModal.querySelector('div').classList.add('scale-95');
+      setTimeout(() => {
+        addRuleModal.classList.add('hidden');
+        templateModal.querySelector('.bg-black').classList.remove('bg-opacity-30');
+      }, 200);
+    }
+
+    document.getElementById('close-add-rule-modal').addEventListener('click', closeAddRuleModal);
+    document.getElementById('cancel-add-rule-btn').addEventListener('click', closeAddRuleModal);
+
+    // 点击添加规则模态框外部关闭
+    addRuleModal.addEventListener('click', (e) => {
+      if (e.target === addRuleModal) {
+        closeAddRuleModal();
+      }
+    });
+
+    // 确认添加规则
+    document.getElementById('confirm-add-rule-btn').addEventListener('click', () => {
+      const policy = document.getElementById('rule-policy').value;
+      const protocol = document.getElementById('rule-protocol').value;
+      const port = document.getElementById('rule-port').value;
+      const object = document.getElementById('rule-object').value;
+      const desc = document.getElementById('rule-desc').value;
+      const limit = document.getElementById('rule-limit').value.trim();
+
+      // 简单验证
+      if (!port || !object) {
+        alert('端口和授权对象为必填项');
+        return;
+      }
+
+      // 计算新序号
+      const ruleCount = rulesTableBody.querySelectorAll('tr').length;
+      const newIndex = ruleCount + 1;
+
+      // 创建新规则行
+      const policyClass = policy === '允许' ? 'bg-green-100 text-success' : 'bg-red-100 text-danger';
+      const newRow = document.createElement('tr');
+      // 新规则没有rule_id，留空
+      newRow.setAttribute('data-rule-id', '');
+      // 新增：存储限速信息
+      newRow.setAttribute('data-rule-limit', limit ? `${limit}kb/s` : '');
+
+      // 构建描述内容，包含限速信息（如果有）
+      let descContent = '';
+      if (limit) {
+        descContent = `
+          <span class="inline-flex items-center mr-2" style="color: #3B82F6;">
+            <i class="fa fa-tachometer mr-1"></i>
+            ${limit}kb/s
+          </span>
+        `;
+        if (desc) {
+          descContent += `<span class="text-gray-600">- ${desc}</span>`;
+        }
+      } else {
+        descContent = desc || '-';
+      }
+
+      newRow.innerHTML = `
+        <td class="px-4 py-3 whitespace-nowrap text-sm text-secondary">${newIndex}</td>
+        <td class="px-4 py-3 whitespace-nowrap text-sm">
+          <span class="px-2 py-1 text-xs rounded-full ${policyClass}">${policy}</span>
+        </td>
+        <td class="px-4 py-3 whitespace-nowrap text-sm text-secondary">${protocol}</td>
+        <td class="px-4 py-3 whitespace-nowrap text-sm text-secondary">${port}</td>
+        <td class="px-4 py-3 text-sm text-secondary">${object}</td>
+        <td class="px-4 py-3 text-sm text-secondary">${desc || '-'}</td>
+        <td class="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
+          <button class="text-danger hover:text-red-700 transition-colors delete-rule">
+            <i class="fa fa-trash"></i>
+          </button>
+        </td>
+      `;
+
+      // 添加到表格
+      rulesTableBody.appendChild(newRow);
+
+      // 绑定删除事件
+      newRow.querySelector('.delete-rule').addEventListener('click', function() {
+        newRow.remove();
+        updateRuleIndexes();
+      });
+
+      // 关闭模态框
+      closeAddRuleModal();
+    });
+
+    // 删除规则
+    document.addEventListener('click', function(e) {
+      if (e.target.closest('.delete-rule')) {
+        const btn = e.target.closest('.delete-rule');
+        btn.closest('tr').remove();
+        updateRuleIndexes();
+      }
+    });
+
+    // 重新计算规则序号
+    function updateRuleIndexes() {
+      const rows = rulesTableBody.querySelectorAll('tr');
+      rows.forEach((row, index) => {
+        row.querySelector('td:first-child').textContent = index + 1;
+      });
+    }
+
+    // ========== 应用模板相关逻辑 ==========
+    // 打开应用模板模态框
+    document.querySelectorAll('.apply-template-btn').forEach(btn => {
+      btn.addEventListener('click', async function() {
+        // 获取模板信息
+        const templateCard = this.closest('.bg-white.rounded-xl');
+        currentTemplateId = templateCard.getAttribute('data-template-id');
+        const templateName = templateCard.querySelector('h3').textContent;
+        const templateDesc = `${templateCard.querySelector('.template-tag:first-child').textContent}`;
+
+        // 更新应用模态框中的模板信息
+        document.getElementById('apply-template-name').textContent = templateName;
+        document.getElementById('apply-template-desc').textContent = templateDesc;
+
+        // 加载主机列表
+        await loadHostsList();
+
+        // 显示模态框
+        applyTemplateModal.classList.remove('hidden');
+        setTimeout(() => {
+          applyTemplateModal.querySelector('div').classList.add('scale-100');
+          applyTemplateModal.querySelector('div').classList.remove('scale-95');
+        }, 10);
+      });
+    });
+
+    // 加载主机列表
+    async function loadHostsList() {
+      const container = document.getElementById('hosts-list-container');
+
+      try {
+        // 清空容器并添加加载指示器
+        container.innerHTML = '';
+        // 克隆加载指示器模板并添加到容器
+        const loadingIndicator = document.getElementById('hosts-loading-template').querySelector('.hosts-loading').cloneNode(true);
+        container.appendChild(loadingIndicator);
+
+        // 请求主机列表
+        const response = await fetch('/temp_host_api');
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+          // 清空容器
+          container.innerHTML = '';
+
+          if (result.data && result.data.length > 0) {
+            // 生成主机列表
+            result.data.forEach(host => {
+              const hostItem = document.createElement('div');
+              hostItem.className = 'p-3 border-b border-gray-200 flex items-center';
+              hostItem.innerHTML = `
+                <input type="checkbox" id="host-${host.id}"
+                       class="host-checkbox mr-3 h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded"
+                       data-host-id="${host.id}">
+                <label for="host-${host.id}" class="flex-1">
+                  <div class="font-medium">${host.host_name}</div>
+                </label>
+              `;
+              container.appendChild(hostItem);
+            });
+          } else {
+            container.innerHTML = '<div class="p-3 text-center text-gray-500">未找到可用主机</div>';
+          }
+        } else {
+          container.innerHTML = `<div class="p-3 text-center text-red-500">获取主机列表失败: ${result.message || '未知错误'}</div>`;
+        }
+      } catch (error) {
+        console.error('加载主机列表失败:', error);
+        container.innerHTML = '<div class="p-3 text-center text-red-500">加载主机失败，请重试</div>';
+      }
+    }
+
+    // 全选/取消全选功能
+    document.getElementById('select-all-hosts').addEventListener('click', function() {
+      const checkboxes = document.querySelectorAll('.host-checkbox');
+      if (checkboxes.length === 0) return;
+
+      const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+
+      // 切换全选状态
+      checkboxes.forEach(cb => {
+        cb.checked = !allChecked;
+      });
+
+      // 更新按钮图标
+      const icon = this.querySelector('i');
+      if (allChecked) {
+        icon.className = 'fa fa-square-o mr-1';
+      } else {
+        icon.className = 'fa fa-check-square-o mr-1';
+      }
+    });
+
+    // 关闭应用模板模态框
+    function closeApplyModal() {
+      applyTemplateModal.querySelector('div').classList.remove('scale-100');
+      applyTemplateModal.querySelector('div').classList.add('scale-95');
+      setTimeout(() => {
+        applyTemplateModal.classList.add('hidden');
+        // 重置状态
+        currentTemplateId = null;
+        // 清空主机列表容器，避免下次打开时显示旧数据
+        document.getElementById('hosts-list-container').innerHTML = '';
+      }, 200);
+    }
+
+    document.getElementById('close-apply-modal').addEventListener('click', closeApplyModal);
+    document.getElementById('cancel-apply-btn').addEventListener('click', closeApplyModal);
+
+    // 点击应用模板模态框外部关闭
+    applyTemplateModal.addEventListener('click', (e) => {
+      if (e.target === applyTemplateModal) {
+        closeApplyModal();
+      }
+    });
+
+    // 确认应用模板
+    document.getElementById('confirm-apply-btn').addEventListener('click', async () => {
+      // 收集选中的主机ID
+      const selectedHosts = Array.from(
+        document.querySelectorAll('.host-checkbox:checked')
+      ).map(cb => parseInt(cb.getAttribute('data-host-id')));
+
+      if (selectedHosts.length === 0) {
+        alert('请至少选择一台目标主机');
+        return;
+      }
+
+      if (!currentTemplateId) {
+        alert('未获取到模板信息，请重试');
+        return;
+      }
+
+      try {
+        const response = await fetch('/temp_to_hosts', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCookie('csrf_token')
+          },
+          body: JSON.stringify({
+            template_id: parseInt(currentTemplateId),
+            host_ids: selectedHosts
+          })
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+          alert('模板应用成功！');
+          closeApplyModal();
+        } else {
+          alert(`应用失败: ${result.message || '服务器处理错误'}`);
+        }
+      } catch (error) {
+        console.error('应用模板失败:', error);
+        alert('应用模板失败，请检查网络连接后重试');
+      }
+    });
+
+    // ========== 删除模板相关逻辑 ==========
+    // 为所有删除按钮绑定事件
+    document.querySelectorAll('.delete-template-btn').forEach(btn => {
+      btn.addEventListener('click', async function() {
+        // 获取当前模板卡片和模板ID
+        const templateCard = this.closest('.bg-white.rounded-xl');
+        const templateId = templateCard.getAttribute('data-template-id');
+        const templateName = templateCard.querySelector('h3').textContent;
+
+        // 确认删除
+        if (!confirm(`确定要删除模板"${templateName}"吗？此操作不可恢复。`)) {
+          return;
+        }
+
+        try {
+          // 发送DELETE请求到后端
+          const response = await fetch(`/temp_del?temp_id=${templateId}`, {
+            method: 'DELETE',
+            headers: {
+              'X-CSRFToken': getCookie('csrf_token')
+            }
+          });
+
+          const result = await response.json();
+
+          if (response.ok && result.success) {
+            alert('模板删除成功！');
+            // 从页面中移除模板卡片
+            templateCard.remove();
+          } else {
+            alert(`删除失败: ${result.message || '服务器处理错误'}`);
+          }
+        } catch (error) {
+          console.error('删除模板时发生错误:', error);
+          alert('删除模板失败，请检查网络连接后重试');
+        }
+      });
+    });
+
+  </script>
+</body>
+</html>
+{% endblock script %}

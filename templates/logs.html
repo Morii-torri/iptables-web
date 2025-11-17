@@ -1,0 +1,1055 @@
+{% extends 'base.html' %}
+{% block main %}
+
+    <!-- 主内容区 -->
+    <div class="flex-1 flex flex-col overflow-hidden">
+      <!-- 顶部导航栏 -->
+      <header class="bg-white border-b border-gray-200 shadow-sm z-10">
+        <div class="flex items-center justify-between h-16 px-6">
+          <!-- 移动端菜单按钮 -->
+          <button id="mobile-menu-btn" class="md:hidden text-gray-500 hover:text-gray-700">
+            <i class="fa fa-bars text-xl"></i>
+          </button>
+
+          <!-- 搜索框 -->
+          <div class="flex-1 max-w-md mx-4 hidden md:block">
+            <div class="relative">
+              <!-- 修改：将搜索图标容器改为可点击按钮 -->
+              <div class="absolute inset-y-0 left-0 pl-3 flex items-center">
+                <button id="search-icon-btn" class="text-gray-400 hover:text-gray-600 focus:outline-none">
+                  <i class="fa fa-search"></i>
+                </button>
+              </div>
+              <input type="text" id="log-search-input" class="block w-full pl-10 pr-10 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-primary focus:border-primary sm:text-sm" placeholder="搜索日志内容...">
+              <!-- 清除搜索按钮 -->
+              <button id="clear-search-btn" class="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600 hidden">
+                <i class="fa fa-times-circle"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- 右侧工具栏 - 移除了刷新、导出、清空按钮 -->
+          <div class="flex items-center space-x-4">
+            <div class="hidden md:block h-6 w-px bg-gray-300"></div>
+            <button class="text-gray-500 hover:text-gray-700 relative"
+                    onclick="window.location.href='/logout'">
+              <span class="flex items-center">
+                <i class="fa fa-sign-out text-xl mr-1"></i>
+                <span class="text-sm">退出登录</span>
+              </span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- 页面内容 -->
+      <main class="flex-1 overflow-y-auto bg-gray-50 p-6">
+        <!-- 新增：搜索结果提示 -->
+        <div class="lg:w-full">
+          <div id="search-result-info" class="mb-4 flex items-center text-sm text-secondary hidden">
+            <i class="fa fa-search mr-2"></i>
+            <span>搜索关键词: "<strong id="search-keyword"></strong>"，找到 <span id="search-count">0</span> 条结果</span>
+            <button id="clear-search-link" class="ml-4 text-primary hover:underline text-sm">
+              <i class="fa fa-times-circle mr-1"></i> 清除搜索
+            </button>
+          </div>
+        </div>
+        <div class="container mx-auto max-w-7xl">
+          <!-- 页面标题和操作区 -->
+          <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+            <div>
+              <h1 class="text-[clamp(1.5rem,3vw,2.5rem)] font-bold text-dark mb-2">操作日志</h1>
+              <p class="text-secondary">查看和管理系统操作记录，追踪用户行为</p>
+            </div>
+          </div>
+
+          <div class="flex flex-col lg:flex-row gap-6">
+            <!-- 筛选面板 -->
+            <div class="lg:w-1/4">
+              <div class="bg-white rounded-xl table-shadow p-5">
+                <h3 class="font-semibold text-lg mb-4">日志筛选</h3>
+
+                <div class="filter-item">
+                  <label class="block text-sm font-medium text-gray-700 mb-2">时间范围</label>
+                  <div class="grid grid-cols-2 gap-2">
+                    <div>
+                      <label class="text-xs text-secondary mb-1 block">开始时间</label>
+                      <input type="datetime-local" id="start-time" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                    </div>
+                    <div>
+                      <label class="text-xs text-secondary mb-1 block">结束时间</label>
+                      <input type="datetime-local" id="end-time" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                    </div>
+                  </div>
+                  <div class="flex flex-wrap gap-2 mt-2">
+                    <button class="text-xs bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded transition-colors" onclick="setTimeRange('today')">今天</button>
+                    <button class="text-xs bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded transition-colors" onclick="setTimeRange('yesterday')">昨天</button>
+                    <button class="text-xs bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded transition-colors" onclick="setTimeRange('week')">本周</button>
+                    <button class="text-xs bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded transition-colors" onclick="setTimeRange('month')">本月</button>
+                  </div>
+                </div>
+
+                <div class="filter-item">
+                  <label class="block text-sm font-medium text-gray-700 mb-2">操作用户</label>
+                  <select id="operator" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                    <option value="">所有用户</option>
+                    <option value="" disabled class="loading-users">加载用户中...</option>
+                  </select>
+                </div>
+                <div class="filter-item">
+                  <label class="block text-sm font-medium text-gray-700 mb-2">操作类型</label>
+                  <div class="space-y-2" id="operation-types-container">
+                    <!-- 操作类型复选框将通过JavaScript动态加载 -->
+                    <div class="text-center text-gray-500 py-4 loading-types">加载操作类型中...</div>
+                  </div>
+                </div>
+
+                <div class="filter-item">
+                  <label class="block text-sm font-medium text-gray-700 mb-2">操作结果</label>
+                  <div class="space-y-2">
+                    <label class="flex items-center">
+                      <input type="checkbox" checked class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded" data-result="1">
+                      <span class="ml-2 text-sm text-gray-700">成功</span>
+                    </label>
+                    <label class="flex items-center">
+                      <input type="checkbox" checked class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded" data-result="0">
+                      <span class="ml-2 text-sm text-gray-700">失败</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="flex gap-3 mt-4">
+                  <button id="filter-btn" class="flex-1 bg-primary text-white px-4 py-2 rounded-lg font-medium btn-hover">
+                    应用筛选
+                  </button>
+                  <button id="reset-filter-btn" class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-100 transition-colors">
+                    重置
+                  </button>
+                </div>
+              </div>
+            </div>
+
+
+            <!-- 日志列表 -->
+            <div class="lg:w-3/4">
+                <div class="bg-white rounded-xl table-shadow overflow-hidden">
+                    <div class="p-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+                        <div class="text-sm text-secondary">
+                            共 <span id="total-count" class="font-medium text-dark">0</span> 条记录
+                        </div>
+                        <div class="relative">
+                            <select id="per-page-select" class="pl-3 pr-10 py-1.5 border border-gray-300 rounded-md bg-white text-sm focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary appearance-none">
+                                <option value="10">10条/页</option>
+                                <option value="20" selected>20条/页</option>
+                                <option value="50">50条/页</option>
+                                <option value="100">100条/页</option>
+                            </select>
+                            <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                                <i class="fa fa-chevron-down text-xs"></i>
+                            </div>
+                        </div>
+                    </div>
+
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-1/6">操作时间</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-1/8">操作用户</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-1/8">操作类型</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-1/4">操作内容</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-1/10">结果</th>
+                                <th scope="col" class="px-6 py-3 text-right text-xs font-semibold text-secondary uppercase tracking-wider">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="log-table-body" class="bg-white divide-y divide-gray-200">
+                            <!-- 加载中状态 -->
+                            <tr id="loading-row">
+                                <td colspan="6" class="px-6 py-8 text-center">
+                                    <div class="flex justify-center items-center">
+                                        <i class="fa fa-spinner fa-spin text-primary mr-2"></i>
+                                        <span>加载日志数据中...</span>
+                                    </div>
+                                </td>
+                            </tr>
+                            <!-- 无数据状态 -->
+                            <tr id="empty-row" class="hidden">
+                                <td colspan="6" class="px-6 py-8 text-center text-secondary">
+                                    <i class="fa fa-info-circle mr-2"></i> 没有找到匹配的日志记录
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <!-- 分页 -->
+                    <div id="pagination-container" class="px-6 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
+                        <div class="text-sm text-secondary">
+                            显示 <span id="showing-start">0</span> 到 <span id="showing-end">0</span> 条，共 <span id="pagination-total">0</span> 条
+                        </div>
+                        <div class="flex space-x-1">
+                            <button id="prev-page" class="px-3 py-1 rounded border border-gray-300 bg-white text-secondary hover:bg-gray-50 disabled:opacity-50" disabled>
+                                <i class="fa fa-chevron-left"></i>
+                            </button>
+                            <div id="page-numbers" class="flex space-x-1">
+                                <!-- 页码按钮将通过JS动态生成 -->
+                            </div>
+                            <button id="next-page" class="px-3 py-1 rounded border border-gray-300 bg-white text-secondary hover:bg-gray-50 disabled:opacity-50" disabled>
+                                <i class="fa fa-chevron-right"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- 日志详情模态框 - 移除了IP地址和用户代理显示 -->
+  <div id="log-detail-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto transform transition-all scale-95">
+      <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+        <h3 class="text-lg font-semibold">日志详情</h3>
+        <button id="close-detail-modal" class="text-gray-400 hover:text-gray-500">
+          <i class="fa fa-times"></i>
+        </button>
+      </div>
+
+      <div class="px-6 py-5">
+        <div class="space-y-4">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <div class="text-sm text-secondary">操作时间</div>
+              <div class="font-medium log-detail-time">2023-06-16 14:32:15</div>
+            </div>
+            <div>
+              <div class="text-sm text-secondary">操作用户</div>
+              <div class="font-medium log-detail-user">admin (管理员)</div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <div class="text-sm text-secondary">操作类型</div>
+              <div class="log-detail-operation">
+                <span class="px-2 py-1 text-xs rounded-full bg-blue-100 text-blue-800">规则管理-添加规则</span>
+              </div>
+            </div>
+            <div>
+              <div class="text-sm text-secondary">操作结果</div>
+              <div class="font-medium log-detail-result text-success">成功</div>
+            </div>
+          </div>
+
+          <div>
+            <div class="text-sm text-secondary mb-1">操作内容</div>
+            <div class="bg-gray-50 p-3 rounded-lg log-detail-summary">
+              <!-- 此处内容将通过JavaScript动态填充 -->
+            </div>
+          </div>
+
+          <div>
+            <div class="text-sm text-secondary mb-1">详细信息</div>
+            <div class="bg-gray-50 p-3 rounded-lg text-sm font-mono overflow-x-auto">
+              <pre class="log-detail-json">{
+  "action": "add_rule",
+  "timestamp": "2023-06-16T14:32:15.782Z",
+  "user": "admin",
+  "rule": {
+    "id": "rule-1285",
+    "name": "允许HTTP访问",
+    "policy": "ACCEPT",
+    "protocol": "tcp",
+    "port": "80",
+    "source": "0.0.0.0/0",
+    "destination": "192.168.1.100",
+    "description": "允许外部访问Web服务器的HTTP服务"
+  },
+  "result": "success",
+  "message": "规则添加成功"
+}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end">
+        <button id="close-detail-btn" class="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-100 transition-colors">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 操作成功提示 -->
+  <div id="success-toast" class="fixed top-4 right-4 bg-success text-white px-4 py-3 rounded-lg shadow-lg transform transition-all translate-x-full opacity-0 z-50 flex items-center">
+    <i class="fa fa-check-circle mr-2"></i>
+    <span id="toast-message">操作成功</span>
+  </div>
+
+{% endblock main %}
+
+
+{% block script %}
+  <script>
+    // 全局变量
+    let currentPage = 1;          // 当前页码
+    let perPage = 20;             // 每页显示条数
+    let totalLogs = 0;            // 总日志数
+    let totalPages = 0;           // 总页数
+    let currentFilters = {};      // 当前筛选条件
+
+    // 缓存模态框DOM元素引用 - 解决重复查询DOM导致的null引用问题
+    let logDetailElements = null;
+
+    // DOM元素 - 页面主要元素引用
+    const logTableBody = document.getElementById('log-table-body');
+    const loadingRow = document.getElementById('loading-row');
+    const emptyRow = document.getElementById('empty-row');
+    const prevPageBtn = document.getElementById('prev-page');
+    const nextPageBtn = document.getElementById('next-page');
+    const pageNumbers = document.getElementById('page-numbers');
+    const totalCountEl = document.getElementById('total-count');
+    const showingStartEl = document.getElementById('showing-start');
+    const showingEndEl = document.getElementById('showing-end');
+    const paginationTotalEl = document.getElementById('pagination-total');
+    const perPageSelect = document.getElementById('per-page-select');
+    const filterBtn = document.getElementById('filter-btn');
+    const resetFilterBtn = document.getElementById('reset-filter-btn');
+    const logDetailModal = document.getElementById('log-detail-modal');
+    const logSearchInput = document.getElementById('log-search-input');
+    // 新增：搜索相关元素
+    const clearSearchBtn = document.getElementById('clear-search-btn');
+    const searchResultInfo = document.getElementById('search-result-info');
+    const searchKeywordEl = document.getElementById('search-keyword');
+    const searchCountEl = document.getElementById('search-count');
+    const clearSearchLink = document.getElementById('clear-search-link');
+
+
+    // 页面加载完成后初始化
+    document.addEventListener('DOMContentLoaded', () => {
+      // 初始化加载日志数据
+      loadLogs();
+      // 新增：加载用户列表和操作类型
+      loadUsers();
+      loadOperationTypes();
+
+      // 缓存模态框元素引用 - 确保只查询一次DOM
+      cacheLogDetailElements();
+      // 新增：搜索框事件监听
+      logSearchInput.addEventListener('input', toggleClearSearchButton);
+      clearSearchBtn.addEventListener('click', clearSearch);
+      clearSearchLink.addEventListener('click', clearSearch);
+
+      // 新增：点击搜索图标触发搜索
+      document.querySelector('.fa-search').parentElement.addEventListener('click', () => {
+        if (logSearchInput.value.trim()) {
+          applyFilters();
+        }
+      });
+
+      // 事件监听 - 每页显示条数变更
+      perPageSelect.addEventListener('change', (e) => {
+        perPage = parseInt(e.target.value);
+        currentPage = 1; // 重置到第一页
+        loadLogs();
+      });
+
+      // 事件监听 - 应用筛选条件
+      filterBtn.addEventListener('click', applyFilters);
+
+      // 事件监听 - 重置筛选条件
+      resetFilterBtn.addEventListener('click', resetFilters);
+
+      // 事件监听 - 上一页
+      prevPageBtn.addEventListener('click', () => {
+        if (currentPage > 1) {
+          currentPage--;
+          loadLogs();
+        }
+      });
+
+      // 事件监听 - 下一页
+      nextPageBtn.addEventListener('click', () => {
+        if (currentPage < totalPages) {
+          currentPage++;
+          loadLogs();
+        }
+      });
+
+      // 事件监听 - 搜索框回车事件
+      logSearchInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+          applyFilters();
+        }
+      });
+      // 新增：搜索图标点击事件
+      document.getElementById('search-icon-btn').addEventListener('click', () => {
+        applyFilters();
+      });
+      // 事件委托 - 处理模态框关闭和详情按钮点击
+      document.addEventListener('click', (e) => {
+        // 关闭模态框
+        if (e.target.closest('#close-detail-modal, #close-detail-btn') || e.target === logDetailModal) {
+          closeLogDetailModal();
+        }
+
+        // 查看日志详情
+        if (e.target.closest('.view-detail-btn')) {
+          const btn = e.target.closest('.view-detail-btn');
+          const log = JSON.parse(btn.dataset.log);
+          showLogDetail(log);
+        }
+      });
+    });
+
+
+    // 新增：加载操作用户列表
+    function loadUsers() {
+      fetch('/users', {
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest'
+        }
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('加载用户失败');
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (data.success && data.users && data.users.length > 0) {
+          const operatorSelect = document.getElementById('operator');
+          // 移除加载提示
+          const loadingOption = operatorSelect.querySelector('.loading-users');
+          if (loadingOption) loadingOption.remove();
+
+          // 添加用户选项
+          data.users.forEach(user => {
+            const option = document.createElement('option');
+            option.value = user.username;
+            option.textContent = user.username;
+            operatorSelect.appendChild(option);
+          });
+        }
+      })
+      .catch(error => {
+        console.error('加载用户列表失败:', error);
+        const operatorSelect = document.getElementById('operator');
+        const loadingOption = operatorSelect.querySelector('.loading-users');
+        if (loadingOption) {
+          loadingOption.textContent = '加载用户失败';
+          loadingOption.style.color = 'red';
+        }
+      });
+    }
+
+    // 新增：加载操作类型列表
+    function loadOperationTypes() {
+      fetch('/logs?get_operation_types=true', {
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest'
+        }
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('加载操作类型失败');
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (data.success && data.types && data.types.length > 0) {
+          const container = document.getElementById('operation-types-container');
+          container.innerHTML = ''; // 清空容器
+
+          // 添加操作类型复选框
+          data.types.forEach(type => {
+            const label = document.createElement('label');
+            label.className = 'flex items-center';
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded';
+            checkbox.checked = true;
+            checkbox.dataset.type = type;
+
+            const span = document.createElement('span');
+            span.className = 'ml-2 text-sm text-gray-700';
+            span.textContent = type;
+
+            label.appendChild(checkbox);
+            label.appendChild(span);
+            container.appendChild(label);
+          });
+        }
+      })
+      .catch(error => {
+        console.error('加载操作类型失败:', error);
+        const container = document.getElementById('operation-types-container');
+        container.innerHTML = '<div class="text-center text-red-500 py-4">加载操作类型失败</div>';
+      });
+    }
+
+
+    /**
+     * 缓存日志详情模态框中的DOM元素
+     * 避免重复查询DOM，提高性能并防止元素引用丢失
+     */
+    function cacheLogDetailElements() {
+      logDetailElements = {
+        time: document.querySelector('.log-detail-time'),
+        user: document.querySelector('.log-detail-user'),
+        operation: document.querySelector('.log-detail-operation'),
+        summary: document.querySelector('.log-detail-summary'),
+        result: document.querySelector('.log-detail-result'),
+        json: document.querySelector('.log-detail-json')
+      };
+
+      // 验证所有必要元素是否都已找到
+      const missingElements = Object.keys(logDetailElements).filter(key => !logDetailElements[key]);
+      if (missingElements.length > 0) {
+        console.error('日志详情模态框缺少必要元素:', missingElements);
+      }
+    }
+    // 新增：切换清除搜索按钮显示状态
+    function toggleClearSearchButton() {
+      if (logSearchInput.value.trim()) {
+        clearSearchBtn.classList.remove('hidden');
+      } else {
+        clearSearchBtn.classList.add('hidden');
+      }
+    }
+
+    // 新增：清除搜索
+    function clearSearch() {
+      logSearchInput.value = '';
+      toggleClearSearchButton();
+
+      // 如果有搜索关键词才重新加载
+      if (searchResultInfo.classList.contains('hidden')) {
+        return;
+      }
+
+      searchResultInfo.classList.add('hidden');
+      applyFilters();
+    }
+
+
+    /**
+     * 加载日志数据
+     * 从服务器获取日志列表并更新UI
+     */
+    function loadLogs() {
+      // 显示加载状态
+      loadingRow.classList.remove('hidden');
+      emptyRow.classList.add('hidden');
+
+      // 构建查询参数
+      const params = new URLSearchParams();
+      params.append('page', currentPage);
+      params.append('per_page', perPage);
+
+      // 添加筛选参数
+      Object.keys(currentFilters).forEach(key => {
+        if (currentFilters[key]) {
+          params.append(key, currentFilters[key]);
+        }
+      });
+
+      // 添加搜索关键词
+      const searchKeyword = logSearchInput.value.trim();
+      if (searchKeyword) {
+        params.append('search', searchKeyword);
+      }
+
+      // 发送请求获取日志数据
+      fetch(`/logs?${params.toString()}`, {
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest'
+        }
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (data.success) {
+          renderLogs(data.data);
+          updatePagination(data.pagination);
+          totalLogs = data.pagination.total;
+          totalPages = data.pagination.pages;
+          renderPageNumbers();
+
+          // 新增：更新搜索结果信息
+          if (searchKeyword) {
+            searchKeywordEl.textContent = searchKeyword;
+            searchCountEl.textContent = totalLogs;
+            searchResultInfo.classList.remove('hidden');
+          } else {
+            searchResultInfo.classList.add('hidden');
+          }
+        } else {
+          showToast(data.message || '加载日志失败', 'error');
+          logTableBody.innerHTML = '';
+          emptyRow.classList.remove('hidden');
+          logTableBody.appendChild(emptyRow);
+        }
+      })
+      .catch(error => {
+        console.error('加载日志失败:', error);
+        showToast('加载日志失败: ' + error.message, 'error');
+        logTableBody.innerHTML = '';
+        emptyRow.classList.remove('hidden');
+        logTableBody.appendChild(emptyRow);
+      })
+      .finally(() => {
+        loadingRow.classList.add('hidden');
+      });
+    }
+
+
+    /**
+     * 渲染日志列表
+     * @param {Array} logs - 日志数据数组
+     */
+    function renderLogs(logs) {
+      // 清空表格
+      logTableBody.innerHTML = '';
+
+      // 无数据状态
+      if (logs.length === 0) {
+        emptyRow.classList.remove('hidden');
+        logTableBody.appendChild(emptyRow);
+        return;
+      }
+
+      // 添加日志行
+      logs.forEach(log => {
+        const row = document.createElement('tr');
+        row.className = 'hover:bg-gray-50 transition-colors';
+
+        // 格式化操作时间
+        const operationTime = formatDateTime(log.operation_time);
+
+        // 操作结果样式
+        const resultClass = log.success ? 'text-success' : 'text-danger';
+        const resultIcon = log.success ? 'fa-check-circle' : 'fa-times-circle';
+        const resultText = log.success ? '成功' : '失败';
+        // 操作类型样式 - 修复：组合 operation_type + operation_object（无连接符）
+        const fullOperationType = log.operation_object
+          ? `${log.operation_type}${log.operation_object}`  // 组合类型+对象
+          : log.operation_type;  // 仅类型（无对象时）
+        const typeStyle = getOperationTypeStyle(fullOperationType);
+
+        row.innerHTML = `
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-secondary">${operationTime}</td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm text-dark">${log.username}</td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm">
+            <span class="px-2 py-1 text-xs rounded-full" style="${typeStyle}">${fullOperationType}</span>
+          </td>
+          <td class="px-6 py-4 text-sm text-secondary">${log.operation_summary}</td>
+          <td class="px-6 py-4 whitespace-nowrap text-sm">
+            <span class="${resultClass} flex items-center">
+              <i class="fa ${resultIcon} mr-1"></i> ${resultText}
+            </span>
+          </td>
+          <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+            <button class="text-primary hover:text-primary/80 transition-colors view-detail-btn"
+                    data-log='${JSON.stringify(log)}'>
+              <i class="fa fa-eye"></i> 详情
+            </button>
+          </td>
+        `;
+
+        logTableBody.appendChild(row);
+      });
+    }
+
+    /**
+     * 更新分页信息
+     * @param {Object} pagination - 分页数据对象
+     */
+    function updatePagination(pagination) {
+      totalCountEl.textContent = pagination.total;
+      paginationTotalEl.textContent = pagination.total;
+
+      const start = pagination.page === 0 ? 0 : (pagination.page - 1) * pagination.per_page + 1;
+      const end = Math.min(pagination.page * pagination.per_page, pagination.total);
+
+      showingStartEl.textContent = start;
+      showingEndEl.textContent = end;
+    }
+
+    /**
+     * 渲染页码按钮
+     */
+    function renderPageNumbers() {
+      pageNumbers.innerHTML = '';
+
+      // 禁用/启用分页按钮
+      prevPageBtn.disabled = currentPage <= 1;
+      nextPageBtn.disabled = currentPage >= totalPages;
+
+      // 生成页码按钮（最多显示5个连续页码）
+      let startPage = Math.max(1, currentPage - 2);
+      let endPage = Math.min(totalPages, startPage + 4);
+
+      // 调整显示范围
+      if (endPage - startPage < 4 && totalPages > 5) {
+        if (startPage === 1) {
+          endPage = 5;
+        } else if (endPage === totalPages) {
+          startPage = Math.max(1, totalPages - 4);
+        }
+      }
+
+      // 添加首页按钮
+      if (startPage > 1) {
+        addPageButton(1);
+        if (startPage > 2) {
+          addEllipsis();
+        }
+      }
+
+      // 添加中间页码
+      for (let i = startPage; i <= endPage; i++) {
+        addPageButton(i);
+      }
+
+      // 添加末页按钮
+      if (endPage < totalPages) {
+        if (endPage < totalPages - 1) {
+          addEllipsis();
+        }
+        addPageButton(totalPages);
+      }
+    }
+
+    /**
+     * 添加页码按钮
+     * @param {number} pageNum - 页码
+     */
+    function addPageButton(pageNum) {
+      const button = document.createElement('button');
+      button.className = `px-3 py-1 rounded border ${currentPage === pageNum ? 'border-primary bg-primary text-white' : 'border-gray-300 bg-white text-secondary hover:bg-gray-50'}`;
+      button.textContent = pageNum;
+      button.addEventListener('click', () => {
+        currentPage = pageNum;
+        loadLogs();
+      });
+      pageNumbers.appendChild(button);
+    }
+
+    /**
+     * 添加省略号
+     */
+    function addEllipsis() {
+      const ellipsis = document.createElement('span');
+      ellipsis.className = 'px-3 py-1 text-secondary';
+      ellipsis.textContent = '...';
+      pageNumbers.appendChild(ellipsis);
+    }
+
+    /**
+     * 应用筛选条件
+     */
+    function applyFilters() {
+      // 收集操作类型筛选
+      const operationTypes = [];
+      document.querySelectorAll('.filter-item:nth-child(4) input[type="checkbox"]:checked').forEach(checkbox => {
+        operationTypes.push(checkbox.nextElementSibling.textContent.trim());
+      });
+
+      // 收集操作结果筛选
+      const successValues = [];
+      document.querySelectorAll('.filter-item:nth-child(5) input[type="checkbox"]:checked').forEach(checkbox => {
+        successValues.push(checkbox.nextElementSibling.textContent.trim() === '成功' ? '1' : '0');
+      });
+
+      // 获取时间范围并格式化
+      const startTime = document.getElementById('start-time').value;
+      const endTime = document.getElementById('end-time').value;
+
+      // 修复：格式化时间为YYYY-MM-DD HH:MM:SS格式
+      const formatDateTime = (datetimeStr) => {
+          if (!datetimeStr) return '';
+          // 将"YYYY-MM-DDTHH:MM"转换为"YYYY-MM-DD HH:MM:SS"
+          return datetimeStr.replace('T', ' ') + ':00';
+      };
+      // 获取操作用户
+      const operator = document.querySelector('.filter-item:nth-child(3) select').value;
+
+      // 构建筛选条件
+      currentFilters = {
+        operation_type: operationTypes.join(','),
+        success: successValues.join(','),
+        start_time: startTime,
+        end_time: endTime,
+        username: operator
+      };
+
+      // 重置到第一页并加载数据
+      currentPage = 1;
+      loadLogs();
+      showToast('筛选条件已应用');
+    }
+
+    /**
+     * 重置筛选条件
+     */
+    function resetFilters() {
+      // 重置时间范围
+      document.getElementById('start-time').value = '';
+      document.getElementById('end-time').value = '';
+      // 重置操作用户
+      document.getElementById('operator').value = '';
+      // 重置操作类型复选框
+      document.querySelectorAll('#operation-types-container input[type="checkbox"]').forEach(checkbox => {
+        checkbox.checked = true;
+      });
+
+      // 重置操作结果复选框
+      document.querySelectorAll('.filter-item:nth-child(5) input[type="checkbox"]').forEach(checkbox => {
+        checkbox.checked = true;
+      });
+
+      // 重置搜索框
+      logSearchInput.value = '';
+      toggleClearSearchButton();
+      searchResultInfo.classList.add('hidden');
+
+      // 清空筛选条件并重新加载数据
+      currentFilters = {};
+      currentPage = 1;
+      loadLogs();
+      showToast('筛选条件已重置');
+    }
+
+    /**
+     * 显示日志详情
+     * @param {Object} log - 日志数据对象
+     */
+    function showLogDetail(log) {
+      // 确保元素已缓存，如果没有则重新缓存
+      if (!logDetailElements) {
+        cacheLogDetailElements();
+      }
+
+      // 检查所有必要元素是否都存在
+      if (!logDetailElements.time || !logDetailElements.user || !logDetailElements.operation ||
+          !logDetailElements.summary || !logDetailElements.result || !logDetailElements.json) {
+        console.error('日志详情模态框元素未找到，无法显示详情');
+        showToast('无法加载日志详情: 页面元素缺失', 'error');
+        return;
+      }
+// 使用缓存的元素引用填充详情数据
+      logDetailElements.time.textContent = formatDateTime(log.operation_time);
+      logDetailElements.user.textContent = log.username;
+
+      // 操作类型显示为 operation_type + operation_object 组合（无连接符）
+      const fullOperationType = log.operation_object
+        ? `${log.operation_type}${log.operation_object}`  // 组合类型+对象
+        : log.operation_type;  // 仅类型（无对象时）
+      logDetailElements.operation.innerHTML = `<span class="px-2 py-1 text-xs rounded-full" style="${getOperationTypeStyle(fullOperationType)}">${fullOperationType}</span>`;
+
+      // 添加操作内容填充（修复空内容问题）
+      logDetailElements.summary.textContent = log.operation_summary || '无操作内容';
+
+      // 结果样式
+      logDetailElements.result.textContent = log.success ? '成功' : '失败';
+      logDetailElements.result.className = `font-medium ${log.success ? 'text-success' : 'text-danger'}`;
+
+      // 格式化详情JSON - 移除了IP和用户代理相关内容
+      try {
+        const details = typeof log.operation_details === 'string' ? JSON.parse(log.operation_details) : log.operation_details;
+        // 移除IP和用户代理信息（如果存在）
+        if (details.ip_address) delete details.ip_address;
+        if (details.user_agent) delete details.user_agent;
+
+        // 格式化详情JSON
+        logDetailElements.json.textContent = JSON.stringify(details, null, 2);
+      } catch (e) {
+        console.error('解析日志详情失败:', e);
+        logDetailElements.json.textContent = log.operation_details || '{}';
+      }
+
+      // 显示模态框并执行动画
+      logDetailModal.classList.remove('hidden');
+      const modalContent = logDetailModal.querySelector('div');
+      modalContent.classList.remove('scale-95');
+      modalContent.classList.add('scale-100');
+    }
+
+    /**
+     * 关闭日志详情模态框
+     */
+    function closeLogDetailModal() {
+      const modalContent = logDetailModal.querySelector('div');
+      modalContent.classList.remove('scale-100');
+      modalContent.classList.add('scale-95');
+
+      // 添加微小延迟确保动画完成后再隐藏
+      setTimeout(() => {
+        logDetailModal.classList.add('hidden');
+      }, 200);
+    }
+
+    /**
+     * 设置时间范围
+     * @param {string} range - 时间范围类型：today, yesterday, week, month
+     */
+    function setTimeRange(range) {
+      const now = new Date();
+      let startDate, endDate;
+
+      switch (range) {
+        case 'today':
+          startDate = new Date(now.setHours(0, 0, 0, 0));
+          endDate = new Date();
+          break;
+        case 'yesterday':
+          startDate = new Date(now.setDate(now.getDate() - 1));
+          startDate.setHours(0, 0, 0, 0);
+          endDate = new Date(startDate);
+          endDate.setHours(23, 59, 59, 999);
+          break;
+        case 'week':
+          startDate = new Date(now.setDate(now.getDate() - now.getDay()));
+          startDate.setHours(0, 0, 0, 0);
+          endDate = new Date();
+          break;
+        case 'month':
+          startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+          startDate.setHours(0, 0, 0, 0);
+          endDate = new Date();
+          break;
+      }
+
+      // 格式化时间为datetime-local格式
+      const dateInputs = document.querySelectorAll('.filter-item:nth-child(2) input[type="datetime-local"]');
+      dateInputs[0].value = formatDateTimeForInput(startDate);
+      dateInputs[1].value = formatDateTimeForInput(endDate);
+    }
+
+
+    /**
+     * 格式化日期时间为本地字符串 (YYYY-MM-DD HH:MM:SS)
+     * @param {string} dateString - 日期时间字符串
+     * @returns {string} 格式化后的日期时间字符串
+     */
+    function formatDateTime(dateString) {
+      if (!dateString) return '';
+      const date = new Date(dateString);
+
+      // 修复：强制使用东八区(Asia/Shanghai)时区格式化时间
+      const options = {
+        timeZone: 'Asia/Shanghai',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      };
+
+      // 使用toLocaleString格式化并转换为"YYYY-MM-DD HH:MM:SS"格式
+      const formatted = date.toLocaleString('zh-CN', options);
+      const [datePart, timePart] = formatted.split(' ');
+      const [year, month, day] = datePart.split('/');
+
+      return `${year}-${month}-${day} ${timePart}`;
+    }
+
+
+    /**
+     * 格式化日期时间为input元素使用的格式 (YYYY-MM-DDTHH:MM)
+     * @param {Date} date - Date对象
+     * @returns {string} 格式化后的日期时间字符串
+     */
+    function formatDateTimeForInput(date) {
+      return date.toISOString().slice(0, 16);
+    }
+
+
+    /**
+     * 获取操作类型样式
+     * @param {string} operationType - 操作类型
+     * @returns {string} 内联样式字符串
+     */
+    function getOperationTypeStyle(operationType) {
+      const typeMap = {
+        // 主机管理相关操作 - 蓝色系
+        '添加主机': 'background-color: #3498db; color: white;',
+        '编辑主机': 'background-color: #4da6ff; color: white;',
+        '删除主机': 'background-color: #64b5f6; color: white;',
+        '添加规则': 'background-color: #81c7ff; color: white;',
+        '删除规则': 'background-color: #90caf9; color: white;',
+
+        // 模板管理相关操作 - 绿色系
+        '添加模板': 'background-color: #2ecc71; color: white;',
+        '删除模板': 'background-color: #4ade80; color: white;',
+        '编辑模板': 'background-color: #6ee7b7; color: white;',
+        '应用模板': 'background-color: #86efac; color: white;',
+        '模板规则添加': 'background-color: #a7f3d0; color: white;',
+        '模板规则删除': 'background-color: #bbf7d0; color: white;',
+
+        // 系统设置相关操作 - 紫色系
+        '编辑名称': 'background-color: #9b59b6; color: white;',
+        '编辑会话时间': 'background-color: #a855f7; color: white;',
+        '编辑系统设置': 'background-color: #a855f7; color: white;',
+        '编辑日志保存时间': 'background-color: #c084fc; color: white;',
+        '修改侧边栏颜色': 'background-color: #d8b4fe; color: white;',
+        '修改密码策略': 'background-color: #e9d5ff; color: white;',
+
+        // 用户管理相关操作 - 橙色系
+        '添加用户': 'background-color: #e67e22; color: white;',
+        '删除用户': 'background-color: #f59e0b; color: white;',
+        '编辑用户': 'background-color: #fbbf24; color: white;',
+        '禁用用户': 'background-color: #fcd34d; color: white;',
+
+        // 角色权限相关操作 - 青色系
+        '添加角色': 'background-color: #1abc9c; color: white;',
+        '编辑角色': 'background-color: #2dd4bf; color: white;',
+        '分配角色权限': 'background-color: #34d399; color: white;',
+        '删除角色': 'background-color: #a7f3d0; color: white;',
+
+        // 其他操作
+        '登录/登出': 'background-color: #34495e; color: white;'
+      };
+
+      // 如果找不到匹配的类型，输出警告并返回默认样式
+      if (!typeMap[operationType]) {
+        console.warn('未找到操作类型的样式:', operationType);
+        return 'background-color: #95a5a6; color: white;'; // 默认灰色
+      }
+
+      return typeMap[operationType];
+    }
+
+
+    /**
+     * 显示提示消息
+     * @param {string} message - 消息内容
+     * @param {string} type - 消息类型：success, error
+     */
+    function showToast(message, type = 'success') {
+      const toast = document.getElementById('success-toast');
+      const toastMessage = document.getElementById('toast-message');
+
+      // 设置提示类型样式
+      toast.className = `fixed top-4 right-4 px-4 py-3 rounded-lg shadow-lg transform transition-all translate-x-full opacity-0 z-50 flex items-center ${type === 'success' ? 'bg-success text-white' : 'bg-danger text-white'}`;
+      toastMessage.textContent = message;
+
+      // 显示提示
+      setTimeout(() => {
+        toast.classList.remove('translate-x-full', 'opacity-0');
+      }, 10);
+
+      // 3秒后隐藏
+      setTimeout(() => {
+        toast.classList.add('translate-x-full', 'opacity-0');
+      }, 3000);
+    }
+  </script>
+{% endblock script %}
