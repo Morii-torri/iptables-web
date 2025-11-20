@@ -163,6 +163,7 @@ def get_host_rule_groups(host_id: int, direction: str):
     db = get_db()
     cursor = db.cursor()
     direction = direction.upper()
+    ensure_default_group(host_id, direction)
     cursor.execute('''
         SELECT g.id, g.name, g.direction, g.is_default,
                COUNT(m.id) AS rule_count
@@ -460,17 +461,24 @@ def get_host_connection_info(host_id):
     return host_dict
 
 
+def create_ssh_client():
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(AutoAddPolicy())
+    return client
+
+
 def pwd_shell_cmd(hostname, port, user, pwd, cmd, *, needs_sudo=False, passwordless_sudo=False, sudo_password=None):
     stdin = None
     stdout = None
     stderr = None
+    client = create_ssh_client()
     try:
-        ssh.set_missing_host_key_policy(AutoAddPolicy())
-        ssh.connect(hostname=hostname, port=port, username=user, password=pwd, timeout=5)
+        client.connect(hostname=hostname, port=port, username=user, password=pwd, timeout=5, look_for_keys=False,
+                       allow_agent=False)
         remote_cmd = cmd
         if needs_sudo:
             remote_cmd = f"sudo -S -p '' {cmd}"
-        stdin, stdout, stderr = ssh.exec_command(remote_cmd)
+        stdin, stdout, stderr = client.exec_command(remote_cmd, get_pty=needs_sudo)
         if needs_sudo and not passwordless_sudo:
             if not sudo_password:
                 raise ValueError('需要sudo密码，但未提供')
@@ -482,8 +490,6 @@ def pwd_shell_cmd(hostname, port, user, pwd, cmd, *, needs_sudo=False, passwordl
         if exit_status != 0:
             raise RuntimeError(error.strip() or output.strip() or f'命令执行失败: {cmd}')
         return output
-    except Exception as e:
-        raise
     finally:
         if stdin:
             stdin.close()
@@ -491,8 +497,7 @@ def pwd_shell_cmd(hostname, port, user, pwd, cmd, *, needs_sudo=False, passwordl
             stdout.close()
         if stderr:
             stderr.close()
-        if ssh:
-            ssh.close()
+        client.close()
 
 
 def sshkey_shell_cmd(hostname, port, user, private_key_str, cmd, *, needs_sudo=False, passwordless_sudo=False,
@@ -500,19 +505,19 @@ def sshkey_shell_cmd(hostname, port, user, private_key_str, cmd, *, needs_sudo=F
     stdin = None
     stdout = None
     stderr = None
+    client = create_ssh_client()
     try:
         if not private_key_str:
             raise ValueError('缺少私钥内容')
-        ssh.set_missing_host_key_policy(AutoAddPolicy())
         key_file = StringIO(private_key_str)
         pkey = paramiko.RSAKey.from_private_key(key_file)
-        ssh.connect(hostname=hostname, port=port, username=user, pkey=pkey, timeout=5,
-                    look_for_keys=False,
-                    allow_agent=False)
+        client.connect(hostname=hostname, port=port, username=user, pkey=pkey, timeout=5,
+                       look_for_keys=False,
+                       allow_agent=False)
         remote_cmd = cmd
         if needs_sudo:
             remote_cmd = f"sudo -S -p '' {cmd}"
-        stdin, stdout, stderr = ssh.exec_command(remote_cmd)
+        stdin, stdout, stderr = client.exec_command(remote_cmd, get_pty=needs_sudo)
         if needs_sudo and not passwordless_sudo:
             if not sudo_password:
                 raise ValueError('需要sudo密码，但未提供')
@@ -531,9 +536,7 @@ def sshkey_shell_cmd(hostname, port, user, private_key_str, cmd, *, needs_sudo=F
             stdout.close()
         if stderr:
             stderr.close()
-        if ssh:
-            ssh.close()
-
+        client.close()
 
 def get_rule(iptables_output):
     # 提取规则行（过滤掉非规则行）
@@ -1090,6 +1093,7 @@ def batch_delete_rules(host_id):
             run_cmd('iptables-save > /etc/iptables/rules.v4')
 
         remove_rule_metadata_by_hash(host_id, direction, rule_hashes)
+        groups = get_host_rule_groups(host_id, direction)
 
         log_operation(
             user_id=current_user.id,
@@ -1104,7 +1108,7 @@ def batch_delete_rules(host_id):
             }),
             success=1
         )
-        return jsonify({'success': True})
+        return jsonify({'success': True, 'data': groups})
     except Exception as e:
         log_operation(
             user_id=current_user.id,
@@ -1926,44 +1930,68 @@ def temp_host_api():
 @permission_required('iptab_add')
 def temp_to_hosts():
     all_params = request.get_json()
-    template_id = all_params['template_id']
+    template_ids_raw = all_params.get('template_ids') or all_params.get('template_id')
     host_ids_list = all_params['host_ids']
     # 获取模板的规则
     try:
         # 获取数据库连接
         db = get_db()
         cursor = db.cursor()
-        # 获取模板名称和主机名称列表
-        cursor.execute('SELECT template_name FROM templates WHERE id = ?', (template_id,))
-        template_name = cursor.fetchone()['template_name']
+        if template_ids_raw is None:
+            return jsonify({'success': False, 'message': '请选择需要应用的模板'}), 400
 
-        # 修复：将整数ID转换为字符串后再拼接
+        template_ids = template_ids_raw if isinstance(template_ids_raw, list) else [template_ids_raw]
+        try:
+            template_ids = [int(tid) for tid in template_ids]
+        except Exception:
+            return jsonify({'success': False, 'message': '模板ID格式不正确'}), 400
+
+        # 获取模板名称和主机名称列表
+        if not host_ids_list:
+            return jsonify({'success': False, 'message': '请选择需要应用的主机'}), 400
+
         host_ids_str = [str(id) for id in host_ids_list]
         cursor.execute('SELECT id, host_name FROM hosts WHERE id IN ({})'.format(','.join(host_ids_str)))
         host_names = {str(h['id']): h['host_name'] for h in cursor.fetchall()}
 
-        # 获取模板的方向
-        cursor.execute(''' select direction from templates  where id = {} ;'''.format(template_id))
-        direction_data = cursor.fetchone()
-        direction = direction_data[0]
-        cursor.execute('SELECT * FROM  rules where template_id = ?', (template_id,))
-        temp_data = cursor.fetchall()
+        # 准备模板信息
+        template_infos = []
+        for template_id in template_ids:
+            cursor.execute('SELECT template_name, direction FROM templates WHERE id = ?', (template_id,))
+            template_row = cursor.fetchone()
+            if not template_row:
+                return jsonify({'success': False, 'message': f'模板ID {template_id} 不存在'}), 404
+            template_infos.append({'id': template_id, 'name': template_row['template_name'], 'direction': template_row['direction']})
+
+        directions = {info['direction'] for info in template_infos}
+        if len(directions) != 1:
+            return jsonify({'success': False, 'message': '一次只能应用相同方向的模板'}), 400
+        direction = directions.pop()
+
         prepared_rules = []
-        for rule in temp_data:
-            payload = {
-                'auth_policy': rule['policy'],
-                'protocol': rule['protocol'],
-                'port': rule['port'],
-                'auth_object': rule['auth_object'],
-                'description': rule['description'],
-                'limit': rule['limit']
-            }
-            command, normalized = build_rule_command(direction, payload, action='-A')
-            prepared_rules.append({
-                'command': command,
-                'hash': compute_rule_hash(normalized),
-                'group_name': rule['group_name'] or RULE_GROUP_DEFAULT_NAME
-            })
+        prepared_hashes = set()
+        for info in template_infos:
+            cursor.execute('SELECT * FROM  rules where template_id = ?', (info['id'],))
+            temp_data = cursor.fetchall()
+            for rule in temp_data:
+                payload = {
+                    'auth_policy': rule['policy'],
+                    'protocol': rule['protocol'],
+                    'port': rule['port'],
+                    'auth_object': rule['auth_object'],
+                    'description': rule['description'],
+                    'limit': rule['limit']
+                }
+                command, normalized = build_rule_command(direction, payload, action='-A')
+                rule_hash = compute_rule_hash(normalized)
+                if rule_hash in prepared_hashes:
+                    continue
+                prepared_hashes.add(rule_hash)
+                prepared_rules.append({
+                    'command': command,
+                    'hash': rule_hash,
+                    'group_name': rule['group_name'] or RULE_GROUP_DEFAULT_NAME
+                })
         # 获取主机的信息
         total_applied = 0
         for host_id in host_ids_list:
@@ -1991,6 +2019,7 @@ def temp_to_hosts():
                                          passwordless_sudo=passwordless_sudo,
                                          sudo_password=sudo_password)
 
+            ensure_default_group(host_id_int, direction)
             existing_output = run_cmd(f'iptables -nL {direction} --line-number -t filter')
             existing_rules = get_rule(existing_output)
             existing_hashes = {compute_rule_hash(rule) for rule in existing_rules}
@@ -2021,10 +2050,10 @@ def temp_to_hosts():
             username=current_user.username,
             operation_type='应用',
             operation_object='模板',
-            operation_summary=f"应用模板到主机: {template_name} ({len(host_ids_list)}台主机)",
+            operation_summary=f"应用模板到主机: {', '.join(info['name'] for info in template_infos)} ({len(host_ids_list)}台主机)",
             operation_details=json.dumps({
-                "template_id": template_id,
-                "template_name": template_name,
+                "template_ids": template_ids,
+                "template_names": [info['name'] for info in template_infos],
                 "direction": direction,
                 "applied_hosts": [
                     {"host_id": hid, "host_name": host_names.get(hid, "未知主机")}
@@ -2048,10 +2077,10 @@ def temp_to_hosts():
             username=current_user.username,
             operation_type='应用',
             operation_object='模板',
-            operation_summary=f"应用模板失败: ID {template_id}",
+            operation_summary="应用模板失败",
             operation_details=json.dumps({
-                "template_id": template_id,
-                "host_ids": host_ids_list,
+                "template_ids": template_ids if 'template_ids' in locals() else [],
+                "host_ids": host_ids_list if 'host_ids_list' in locals() else [],
                 "error": str(e),
                 "error_type": type(e).__name__,
                 "operation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')

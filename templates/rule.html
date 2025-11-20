@@ -673,7 +673,7 @@
       }
       if (!confirm('确定删除选中的规则吗？')) return;
       try {
-        await jsonFetch(`/api/hosts/${hostId}/rules/batch-delete`, {
+        const result = await jsonFetch(`/api/hosts/${hostId}/rules/batch-delete`, {
           method: 'POST',
           body: JSON.stringify({
             direction: currentDirection,
@@ -684,6 +684,13 @@
         selectedRules.forEach(({ row }) => row.remove());
         selectedRules.clear();
         updateBulkActionState();
+        if (result?.data) {
+          groups = result.data;
+          populateGroupSelects();
+          const activeGroup = groupFilters?.querySelector('.group-chip.active')?.dataset.group || 'all';
+          renderGroupFilters(activeGroup);
+          filterRowsByGroup(activeGroup);
+        }
         showToast('success-toast');
       } catch (error) {
         console.error(error);
