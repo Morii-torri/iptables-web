@@ -1,5 +1,38 @@
 {% extends 'base.html' %}
 {% block main %}
+  <style>
+    .group-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
+      border: 1px solid #e5e7eb;
+      font-size: 0.875rem;
+      color: #4b5563;
+      background-color: #ffffff;
+      transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+      cursor: pointer;
+    }
+    .group-chip:hover {
+      border-color: #cbd5f5;
+      color: #111827;
+    }
+    .group-chip.active {
+      background-color: rgb(22 93 255 / 1);
+      border-color: rgb(22 93 255 / 1);
+      color: #ffffff;
+    }
+    .group-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      color: #374151;
+      background-color: #f3f4f6;
+      line-height: 1.25rem;
+    }
+  </style>
     <div class="flex-1 flex flex-col overflow-hidden">
       <!-- 顶部导航栏 -->
       <header class="bg-white border-b border-gray-200 shadow-sm z-10">
@@ -70,17 +103,52 @@
             </button>
           </div>
 
+          <!-- 分组筛选 & 快捷操作 -->
+          <div class="bg-white rounded-xl p-4 mb-4 border border-gray-100 shadow-sm">
+            <div class="flex flex-col lg:flex-row lg:items-center gap-4">
+              <div class="flex flex-wrap gap-2" id="group-filters">
+                <button data-group="all" class="group-chip active">全部分组</button>
+                {% for group in groups %}
+                <button data-group="{{ group.name }}" class="group-chip">
+                  {{ group.name }} <span class="ml-1 text-xs text-gray-500">{{ group.rule_count }}</span>
+                </button>
+                {% endfor %}
+              </div>
+              <div class="flex flex-wrap gap-3 ml-auto items-center">
+                <select id="bulk-group-select" class="px-3 py-2 border border-gray-300 rounded-md text-sm">
+                  <option value="">选择目标分组</option>
+                  {% for group in groups %}
+                  <option value="{{ group.id }}">{{ group.name }}</option>
+                  {% endfor %}
+                </select>
+                <button id="move-to-group-btn" class="px-4 py-2 bg-indigo-50 text-indigo-700 rounded-md text-sm">
+                  <i class="fa fa-folder-open mr-1"></i> 移动到分组
+                </button>
+                <button id="batch-delete-btn" class="px-4 py-2 bg-red-50 text-red-600 rounded-md text-sm">
+                  <i class="fa fa-trash mr-1"></i> 批量删除
+                </button>
+                <button id="create-group-btn" class="px-4 py-2 border border-gray-300 rounded-md text-sm">
+                  <i class="fa fa-plus mr-1"></i> 新建分组
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- 规则列表 -->
           <div class="bg-white rounded-xl table-shadow overflow-hidden">
             <table class="min-w-full divide-y divide-gray-200">
               <thead class="bg-gray-50">
                 <tr>
+                  <th class="w-12 px-4 py-4">
+                    <input type="checkbox" id="select-all-rules" class="form-checkbox">
+                  </th>
                   <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">ID</th>
                   <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">授权策略</th>
                   <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">协议类型</th>
                   <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">端口</th>
                   <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">授权对象</th>
                   <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">描述</th>
+                  <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-secondary uppercase tracking-wider">分组</th>
                   <th scope="col" class="px-6 py-4 text-right text-xs font-semibold text-secondary uppercase tracking-wider">操作</th>
                 </tr>
               </thead>
@@ -94,7 +162,13 @@
                     data-port="{{ data.port }}"
                     data-source="{{ data.source }}"
                     data-comment="{{ data.comment }}"
-                    data-limit="{{ data.limit }}">
+                    data-limit="{{ data.limit }}"
+                    data-hash="{{ data.rule_hash }}"
+                    data-group-name="{{ data.group_name }}"
+                    data-group-id="{{ data.group_id }}">
+                  <td class="px-4 py-4 text-center">
+                    <input type="checkbox" class="rule-select" data-num="{{ data.num }}" data-hash="{{ data.rule_hash }}">
+                  </td>
                   <td class="data-num px-6 py-4 whitespace-nowrap text-sm font-medium text-dark">{{ data.num }}</td>
                   <td class="px-6 py-4 whitespace-nowrap text-sm">
                     {% if data.target == 'ACCEPT' %}
@@ -122,6 +196,9 @@
                       <!-- 无限速时仅显示原有描述 -->
                       {{ data.comment or '' }}
                     {% endif %}
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="group-badge">{{ data.group_name }}</span>
                   </td>
                   <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                     <button class="edit-btn text-info hover:text-primary mr-3 transition-colors">
@@ -151,6 +228,7 @@
 
       <div class="px-6 py-5">
         <form id="rule-form">
+          <input type="hidden" id="rule-hash" name="rule-hash">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
             <div>
               <label for="rule-id" class="block text-sm font-medium text-gray-700 mb-1">ID</label>
@@ -185,6 +263,15 @@
               <input type="text" id="auth-object" name="auth-object" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="IP地址或网段，例如: 192.168.1.0/24">
             </div>
 
+            <div>
+              <label for="rule-group" class="block text-sm font-medium text-gray-700 mb-1">规则分组</label>
+              <select id="rule-group" name="rule-group" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent">
+                {% for group in groups %}
+                <option value="{{ group.id }}">{{ group.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
             <!-- 限速输入框（一直显示） -->
             <div id="speed-limit-container" class="md:col-span-2">
               <label for="speed-limit" class="block text-sm font-medium text-gray-700 mb-1">限制速率（kb/s，留空表示不限速）</label>
@@ -208,6 +295,28 @@
       </div>
     </div>
   </div>
+
+  <!-- 新建分组模态框 -->
+  <div id="group-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-xl w-full max-w-md p-6">
+      <div class="flex justify-between items-center mb-4">
+        <h3 class="text-lg font-semibold">新建规则分组</h3>
+        <button id="close-group-modal" class="text-gray-400 hover:text-gray-500">
+          <i class="fa fa-times"></i>
+        </button>
+      </div>
+      <div class="space-y-4">
+        <div>
+          <label for="new-group-name" class="block text-sm font-medium text-gray-700 mb-1">分组名称</label>
+          <input type="text" id="new-group-name" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="例如：Web服务端口">
+        </div>
+      </div>
+      <div class="mt-6 flex justify-end gap-3">
+        <button id="cancel-group-btn" class="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50">取消</button>
+        <button id="confirm-group-btn" class="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary/90">创建</button>
+      </div>
+    </div>
+  </div>
   <!-- 提示消息 -->
   <div id="success-toast" class="toast bg-success text-white translate-x-full">
     <i class="fa fa-check-circle mr-2"></i>
@@ -222,65 +331,19 @@
 
 {% block script %}
   <script>
-    // 新增状态标记：true为编辑，false为新增
+    const hostId = {{ id|tojson }};
+    const currentDirection = {{ direction|default('INPUT')|tojson }};
+    let groups = {{ groups|tojson }};
     let isEditing = false;
-    // 方向选择按钮交互
+
     const inboundBtn = document.getElementById('inbound-btn');
     const outboundBtn = document.getElementById('outbound-btn');
-
-    // 根据当前URL设置初始激活状态
-    function setActiveDirection() {
-      const currentUrl = window.location.pathname;
-
-      if (currentUrl.includes('/rules_in')) {
-        inboundBtn.classList.remove('text-secondary', 'hover:bg-gray-100');
-        inboundBtn.classList.add('bg-primary', 'text-white');
-        outboundBtn.classList.remove('bg-primary', 'text-white');
-        outboundBtn.classList.add('text-secondary', 'hover:bg-gray-100');
-      } else if (currentUrl.includes('/rules_out')) {
-        outboundBtn.classList.remove('text-secondary', 'hover:bg-gray-100');
-        outboundBtn.classList.add('bg-primary', 'text-white');
-        inboundBtn.classList.remove('bg-primary', 'text-white');
-        inboundBtn.classList.add('text-secondary', 'hover:bg-gray-100');
-      }
-    }
-
-    // 页面加载时设置初始状态
-    setActiveDirection();
-
-    inboundBtn.addEventListener('click', () => {
-      inboundBtn.classList.remove('text-secondary', 'hover:bg-gray-100');
-      inboundBtn.classList.add('bg-primary', 'text-white');
-      outboundBtn.classList.remove('bg-primary', 'text-white');
-      outboundBtn.classList.add('text-secondary', 'hover:bg-gray-100');
-      console.log('切换到入方向规则');
-    });
-
-    outboundBtn.addEventListener('click', () => {
-      outboundBtn.classList.remove('text-secondary', 'hover:bg-gray-100');
-      outboundBtn.classList.add('bg-primary', 'text-white');
-      inboundBtn.classList.remove('bg-primary', 'text-white');
-      inboundBtn.classList.add('text-secondary', 'hover:bg-gray-100');
-      console.log('切换到出方向规则');
-    });
-
-    // 显示提示消息
-    function showToast(elementId) {
-      const toast = document.getElementById(elementId);
-      toast.classList.remove('translate-x-full');
-      setTimeout(() => {
-        toast.classList.add('translate-x-full');
-      }, 3000);
-    }
-
-    // 模态框相关元素
-    const modal = document.getElementById('rule-modal');
+    const ruleModal = document.getElementById('rule-modal');
     const addRuleBtn = document.getElementById('add-rule-btn');
     const closeModalBtn = document.getElementById('close-modal');
     const cancelBtn = document.getElementById('cancel-btn');
     const saveBtn = document.getElementById('save-btn');
     const modalTitle = document.getElementById('modal-title');
-    // 表单元素
     const ruleForm = document.getElementById('rule-form');
     const ruleIdInput = document.getElementById('rule-id');
     const authPolicySelect = document.getElementById('auth-policy');
@@ -288,192 +351,350 @@
     const portInput = document.getElementById('port');
     const authObjectInput = document.getElementById('auth-object');
     const descriptionTextarea = document.getElementById('description');
-    // 新增：获取限速相关元素
-    const speedLimitContainer = document.getElementById('speed-limit-container');
     const speedLimitInput = document.getElementById('speed-limit');
+    const ruleGroupSelect = document.getElementById('rule-group');
+    const ruleHashInput = document.getElementById('rule-hash');
+    const selectAllCheckbox = document.getElementById('select-all-rules');
+    const groupFilters = document.getElementById('group-filters');
+    const bulkGroupSelect = document.getElementById('bulk-group-select');
+    const moveToGroupBtn = document.getElementById('move-to-group-btn');
+    const batchDeleteBtn = document.getElementById('batch-delete-btn');
+    const createGroupBtn = document.getElementById('create-group-btn');
+    const groupModal = document.getElementById('group-modal');
+    const closeGroupModalBtn = document.getElementById('close-group-modal');
+    const cancelGroupBtn = document.getElementById('cancel-group-btn');
+    const confirmGroupBtn = document.getElementById('confirm-group-btn');
+    const newGroupNameInput = document.getElementById('new-group-name');
+    const selectedRules = new Map();
 
-    // 打开新增规则模态框
-    addRuleBtn.addEventListener('click', () => {
-      const dataCount = {{ data_list|length }};
-      modalTitle.textContent = '新增规则';
-      ruleForm.reset(); // 重置表单
-      ruleIdInput.value = dataCount + 1; // 自动生成ID
-      isEditing = false; // 标记为“新增”状态
-      ruleIdInput.disabled = isEditing; // 简化逻辑：编辑时禁用，新增时启用
-      // 移除：初始化限速输入框状态
-      // toggleSpeedLimitInput();
-      // 显示模态框
-      modal.classList.remove('hidden');
+    function setActiveDirection() {
+      if (currentDirection === 'INPUT') {
+        inboundBtn.classList.add('bg-primary', 'text-white');
+      } else {
+        outboundBtn.classList.add('bg-primary', 'text-white');
+      }
+    }
+
+    function showToast(elementId) {
+      const toast = document.getElementById(elementId);
+      toast.classList.remove('translate-x-full');
+      setTimeout(() => toast.classList.add('translate-x-full'), 2500);
+    }
+
+    function getDefaultGroupId() {
+      const defaultGroup = groups.find(g => g.is_default);
+      return defaultGroup ? defaultGroup.id : (groups[0] ? groups[0].id : '');
+    }
+
+    function populateGroupSelects() {
+      if (!ruleGroupSelect || !bulkGroupSelect) return;
+      ruleGroupSelect.innerHTML = '';
+      bulkGroupSelect.innerHTML = '<option value="">选择目标分组</option>';
+      groups.forEach(group => {
+        const option = document.createElement('option');
+        option.value = group.id;
+        option.textContent = group.name;
+        ruleGroupSelect.appendChild(option);
+        const bulkOption = document.createElement('option');
+        bulkOption.value = group.id;
+        bulkOption.textContent = group.name;
+        bulkGroupSelect.appendChild(bulkOption);
+      });
+      const defaultId = getDefaultGroupId();
+      if (defaultId) {
+        ruleGroupSelect.value = defaultId;
+      }
+    }
+
+    function renderGroupFilters(activeName = 'all') {
+      if (!groupFilters) return;
+      groupFilters.innerHTML = '';
+      const allBtn = document.createElement('button');
+      allBtn.dataset.group = 'all';
+      allBtn.textContent = '全部分组';
+      allBtn.className = 'group-chip';
+      if (activeName === 'all') allBtn.classList.add('active');
+      groupFilters.appendChild(allBtn);
+      groups.forEach(group => {
+        const btn = document.createElement('button');
+        btn.dataset.group = group.name;
+        btn.className = 'group-chip';
+        if (activeName === group.name) btn.classList.add('active');
+        btn.innerHTML = `${group.name} <span class="ml-1 text-xs text-gray-500">${group.rule_count}</span>`;
+        groupFilters.appendChild(btn);
+      });
+    }
+
+    function filterRowsByGroup(groupName) {
+      document.querySelectorAll('tbody tr').forEach(row => {
+        if (groupName === 'all' || row.dataset.groupName === groupName) {
+          row.classList.remove('hidden');
+        } else {
+          row.classList.add('hidden');
+        }
+      });
+    }
+
+    function toggleRowSelection(checkbox) {
+      const hash = checkbox.dataset.hash;
+      const row = checkbox.closest('tr');
+      if (checkbox.checked) {
+        selectedRules.set(hash, { num: checkbox.dataset.num, row });
+        row.classList.add('bg-primary/5');
+      } else {
+        selectedRules.delete(hash);
+        row.classList.remove('bg-primary/5');
+      }
+      updateBulkActionState();
+    }
+
+    function updateBulkActionState() {
+      const hasSelection = selectedRules.size > 0;
+      moveToGroupBtn.disabled = !hasSelection;
+      batchDeleteBtn.disabled = !hasSelection;
+    }
+
+    function openRuleModal(title) {
+      modalTitle.textContent = title;
+      ruleModal.classList.remove('hidden');
       setTimeout(() => {
-        modal.querySelector('div').classList.add('scale-100');
-        modal.querySelector('div').classList.remove('scale-95');
+        ruleModal.querySelector('div').classList.add('scale-100');
+        ruleModal.querySelector('div').classList.remove('scale-95');
       }, 10);
-    });
+    }
 
-    // 关闭模态框
-    const closeModal = () => {
-      modal.querySelector('div').classList.remove('scale-100');
-      modal.querySelector('div').classList.add('scale-95');
+    function closeRuleModal() {
+      ruleModal.querySelector('div').classList.remove('scale-100');
+      ruleModal.querySelector('div').classList.add('scale-95');
       setTimeout(() => {
-        modal.classList.add('hidden');
-        speedLimitContainer.classList.add('hidden'); // 关闭时隐藏，避免下次打开残留
-        speedLimitInput.value = ''; // 清空输入值
+        ruleModal.classList.add('hidden');
       }, 200);
-    };
+    }
 
-    closeModalBtn.addEventListener('click', closeModal);
-    cancelBtn.addEventListener('click', closeModal);
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) closeModal();
+    function openGroupModal() {
+      newGroupNameInput.value = '';
+      groupModal.classList.remove('hidden');
+    }
+
+    function closeGroupModal() {
+      groupModal.classList.add('hidden');
+    }
+
+    function resetRuleForm() {
+      ruleForm.reset();
+      ruleHashInput.value = '';
+      const defaultId = getDefaultGroupId();
+      if (defaultId) {
+        ruleGroupSelect.value = defaultId;
+      }
+    }
+
+    async function jsonFetch(url, options = {}) {
+      const response = await fetch(url, {
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+        ...options
+      });
+      const result = await response.json();
+      if (!response.ok || result.success === false) {
+        throw new Error(result.message || '请求失败');
+      }
+      return result;
+    }
+
+    addRuleBtn.addEventListener('click', () => {
+      isEditing = false;
+      resetRuleForm();
+      ruleIdInput.value = document.querySelectorAll('tbody tr').length + 1;
+      ruleIdInput.disabled = false;
+      openRuleModal('新增规则');
     });
 
-    // 编辑按钮交互：回显数据到模态框
     document.querySelectorAll('.edit-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        const row = btn.closest('tr'); // 获取当前规则行
-        // 从data-*属性读取数据
-        const ruleData = {
-          num: row.dataset.num,
-          target: row.dataset.target,
-          prot: row.dataset.prot,
-          port: row.dataset.port,
-          source: row.dataset.source,
-          comment: row.dataset.comment,
-          limit: row.dataset.limit || '' // 读取限速值，默认空字符串
-        };
-
-        // 填充表单数据
-        modalTitle.textContent = '编辑规则';
-        ruleIdInput.value = ruleData.num; // 回显ID
-        authPolicySelect.value = ruleData.target; // 选中授权策略
-        protocolSelect.value = ruleData.prot; // 选中协议类型
-        portInput.value = ruleData.port; // 回显端口
-        authObjectInput.value = ruleData.source; // 回显授权对象
-        descriptionTextarea.value = ruleData.comment; // 回显描述
-
-        // 修改：回显限速数值（移除kb/s单位，只保留数字）
-        speedLimitInput.value = ruleData.limit ? ruleData.limit.replace(/kb\/s$/, '').trim() : ''
-
-        isEditing = true; // 标记为“编辑”状态
-        ruleIdInput.disabled = isEditing; // 编辑时禁用ID
-
-
-        // 显示模态框
-        modal.classList.remove('hidden');
-        setTimeout(() => {
-          modal.querySelector('div').classList.add('scale-100');
-          modal.querySelector('div').classList.remove('scale-95');
-        }, 10);
+        const row = btn.closest('tr');
+        isEditing = true;
+        ruleIdInput.value = row.dataset.num;
+        ruleIdInput.disabled = true;
+        authPolicySelect.value = row.dataset.target;
+        protocolSelect.value = row.dataset.prot;
+        portInput.value = row.dataset.port;
+        authObjectInput.value = row.dataset.source;
+        descriptionTextarea.value = row.dataset.comment;
+        ruleGroupSelect.value = row.dataset.groupId || getDefaultGroupId();
+        ruleHashInput.value = row.dataset.hash || '';
+        speedLimitInput.value = row.dataset.limit ? row.dataset.limit.replace(/kb\/s$/i, '').trim() : '';
+        openRuleModal('编辑规则');
       });
     });
 
-    // 保存按钮：提交新增/编辑请求
-    saveBtn.addEventListener('click', async () => {
-      // 获取当前页面方向（入方向/出方向）
-      const currentUrl = window.location.pathname;
-      const direction = currentUrl.includes('/rules_in') ? 'INPUT' : 'OUTPUT';
-      // 获取host_id（从Flask后端传递）
-      const hostId = {{ id|tojson }};
+    closeModalBtn.addEventListener('click', closeRuleModal);
+    cancelBtn.addEventListener('click', closeRuleModal);
+    ruleModal.addEventListener('click', (e) => {
+      if (e.target === ruleModal) closeRuleModal();
+    });
 
-      // 收集表单数据（新增：添加限速字段）
-      const formData = {
-        host_id: hostId,
-        direction: direction,
-        rule_id: document.getElementById('rule-id').value,
-        auth_policy: document.getElementById('auth-policy').value,
-        protocol: document.getElementById('protocol').value,
-        port: document.getElementById('port').value,
-        auth_object: document.getElementById('auth-object').value,
-        description: document.getElementById('description').value,
-        // 修改：限速值（拼接kb/s单位），无论策略如何，只要有值就传递
-        limit: speedLimitInput.value.trim()
-          ? `${speedLimitInput.value.trim()}kb/s`
-          : ''
-      };
+    if (createGroupBtn) {
+      createGroupBtn.addEventListener('click', openGroupModal);
+    }
+    closeGroupModalBtn.addEventListener('click', closeGroupModal);
+    cancelGroupBtn.addEventListener('click', closeGroupModal);
 
-
-      // 根据状态决定请求URL（新增→/rules_add，编辑→/rules_update）
-      const url = isEditing ? '/rules_update' : '/rules_add';
-
+    confirmGroupBtn.addEventListener('click', async () => {
+      const name = newGroupNameInput.value.trim();
+      if (!name) {
+        alert('请输入分组名称');
+        return;
+      }
       try {
-        // 发送POST请求到后端更新接口
-        const response = await fetch(url, {
+        const result = await jsonFetch(`/api/hosts/${hostId}/rule-groups`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            // 如果需要CSRF保护，添加CSRF令牌（根据Flask配置）
-            // 'X-CSRFToken': getCSRFToken()
-          },
-          body: JSON.stringify(formData)
+          body: JSON.stringify({ name, direction: currentDirection })
         });
-
-        if (response.ok) {
-          showToast('success-toast');
-          closeModal();
-          window.location.reload(); // 刷新页面显示新数据
-        } else {
-          throw new Error(isEditing ? '更新失败' : '新增失败');
-        }
+        groups = result.data;
+        populateGroupSelects();
+        renderGroupFilters();
+        closeGroupModal();
+        showToast('success-toast');
       } catch (error) {
-        console.error('请求失败:', error);
+        console.error(error);
         showToast('error-toast');
       }
     });
 
-    // 删除按钮交互（保持原有逻辑）
-    const currentUrlDel = window.location.pathname;
-    if (currentUrlDel.includes('/rules_in')) {
-      document.querySelectorAll('.delete-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          if (confirm('确定要删除这条规则吗？')) {
-            const row = btn.closest('tr');
-            const dataNum = row.dataset.num;
-            const hostId = {{ id|tojson }};
-            fetch(`/rule_del?host_id=${hostId}&rule_id=${dataNum}&direction=INPUT`, {
-              method: 'DELETE'
-            })
-            .then(response => {
-              if (response.ok) {
-                window.location.reload();
-                showToast('success-toast');
-              } else {
-                showToast('error-toast');
-              }
-            })
-            .catch(error => {
-              console.error('删除请求失败:', error);
-              showToast('error-toast');
-            });
-          }
-        });
+    saveBtn.addEventListener('click', async () => {
+      const payload = {
+        host_id: hostId,
+        direction: currentDirection,
+        rule_id: ruleIdInput.value,
+        auth_policy: authPolicySelect.value,
+        protocol: protocolSelect.value,
+        port: portInput.value,
+        auth_object: authObjectInput.value,
+        description: descriptionTextarea.value,
+        limit: speedLimitInput.value.trim() ? `${speedLimitInput.value.trim()}kb/s` : '',
+        group_id: ruleGroupSelect.value,
+        rule_hash: ruleHashInput.value
+      };
+      const url = isEditing ? '/rules_update' : '/rules_add';
+      try {
+        await jsonFetch(url, { method: 'POST', body: JSON.stringify(payload) });
+        showToast('success-toast');
+        setTimeout(() => window.location.reload(), 800);
+      } catch (error) {
+        console.error(error);
+        showToast('error-toast');
+      }
+    });
+
+    document.querySelectorAll('.delete-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('确定要删除这条规则吗？')) return;
+        const row = btn.closest('tr');
+        const ruleNum = row.dataset.num;
+        const ruleHash = row.dataset.hash;
+        try {
+          await jsonFetch(`/rule_del?host_id=${hostId}&rule_id=${ruleNum}&direction=${currentDirection}&rule_hash=${ruleHash}`, {
+            method: 'DELETE'
+          });
+          row.remove();
+          showToast('success-toast');
+        } catch (error) {
+          console.error(error);
+          showToast('error-toast');
+        }
       });
-    }
-    if (currentUrlDel.includes('/rules_out')) {
-      document.querySelectorAll('.delete-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          if (confirm('确定要删除这条规则吗？')) {
-            const row = btn.closest('tr');
-            const dataNum = row.dataset.num;
-            const hostId = {{ id|tojson }};
-            fetch(`/rule_del?host_id=${hostId}&rule_id=${dataNum}&direction=OUTPUT`, {
-              method: 'DELETE'
-            })
-            .then(response => {
-              if (response.ok) {
-                window.location.reload();
-                showToast('success-toast');
-              } else {
-                showToast('error-toast');
-              }
-            })
-            .catch(error => {
-              console.error('删除请求失败:', error);
-              showToast('error-toast');
-            });
-          }
+    });
+
+    document.querySelectorAll('.rule-select').forEach(cb => {
+      cb.addEventListener('change', () => toggleRowSelection(cb));
+    });
+
+    if (selectAllCheckbox) {
+      selectAllCheckbox.addEventListener('change', () => {
+        document.querySelectorAll('.rule-select').forEach(cb => {
+          cb.checked = selectAllCheckbox.checked;
+          toggleRowSelection(cb);
         });
       });
     }
 
+    if (groupFilters) {
+      groupFilters.addEventListener('click', (e) => {
+        const btn = e.target.closest('.group-chip');
+        if (!btn) return;
+        groupFilters.querySelectorAll('.group-chip').forEach(el => el.classList.remove('active'));
+        btn.classList.add('active');
+        filterRowsByGroup(btn.dataset.group);
+      });
+    }
+
+    moveToGroupBtn.addEventListener('click', async () => {
+      if (selectedRules.size === 0) {
+        alert('请先选择需要调整的规则');
+        return;
+      }
+      if (!bulkGroupSelect.value) {
+        alert('请选择目标分组');
+        return;
+      }
+      try {
+        const result = await jsonFetch(`/api/hosts/${hostId}/rules/group`, {
+          method: 'POST',
+          body: JSON.stringify({
+            direction: currentDirection,
+            group_id: bulkGroupSelect.value,
+            rule_hashes: Array.from(selectedRules.keys())
+          })
+        });
+        groups = result.data;
+        const targetGroup = groups.find(g => g.id == bulkGroupSelect.value);
+        selectedRules.forEach(({ row }) => {
+          row.dataset.groupId = bulkGroupSelect.value;
+          row.dataset.groupName = targetGroup ? targetGroup.name : row.dataset.groupName;
+          row.querySelector('.group-badge').textContent = row.dataset.groupName;
+          row.classList.remove('bg-primary/5');
+          row.querySelector('.rule-select').checked = false;
+        });
+        selectedRules.clear();
+        updateBulkActionState();
+        populateGroupSelects();
+        renderGroupFilters(groupFilters.querySelector('.group-chip.active')?.dataset.group || 'all');
+        showToast('success-toast');
+      } catch (error) {
+        console.error(error);
+        showToast('error-toast');
+      }
+    });
+
+    batchDeleteBtn.addEventListener('click', async () => {
+      if (selectedRules.size === 0) {
+        alert('请选择需要删除的规则');
+        return;
+      }
+      if (!confirm('确定删除选中的规则吗？')) return;
+      try {
+        await jsonFetch(`/api/hosts/${hostId}/rules/batch-delete`, {
+          method: 'POST',
+          body: JSON.stringify({
+            direction: currentDirection,
+            rule_ids: Array.from(selectedRules.values()).map(item => item.num),
+            rule_hashes: Array.from(selectedRules.keys())
+          })
+        });
+        selectedRules.forEach(({ row }) => row.remove());
+        selectedRules.clear();
+        updateBulkActionState();
+        showToast('success-toast');
+      } catch (error) {
+        console.error(error);
+        showToast('error-toast');
+      }
+    });
+
+    populateGroupSelects();
+    renderGroupFilters();
+    filterRowsByGroup('all');
+    setActiveDirection();
+    updateBulkActionState();
   </script>
 {% endblock script %}

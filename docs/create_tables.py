@@ -83,6 +83,7 @@ def create_rule_table(conn):
             auth_object TEXT DEFAULT '0.0.0.0/0',        -- 授权对象
             description TEXT ,        -- 注释
             limit TEXT ,        -- 限流
+            group_name TEXT DEFAULT '默认分组',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -172,6 +173,50 @@ def create_permissions_table(conn):
         cursor = conn.cursor()
         cursor.execute(sql_create_permissions_table)
         print("权限表创建成功")
+    except Error as e:
+        print(f"创建表时出错: {e}")
+
+
+def create_host_rule_groups_table(conn):
+    try:
+        sql = """
+        CREATE TABLE IF NOT EXISTS host_rule_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            host_id INTEGER NOT NULL,
+            direction TEXT NOT NULL,
+            name TEXT NOT NULL,
+            is_default INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(host_id, direction, name)
+        );
+        """
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        print("主机规则分组表创建成功")
+    except Error as e:
+        print(f"创建表时出错: {e}")
+
+
+def create_host_rule_metadata_table(conn):
+    try:
+        sql = """
+        CREATE TABLE IF NOT EXISTS host_rule_metadata (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            host_id INTEGER NOT NULL,
+            direction TEXT NOT NULL,
+            rule_hash TEXT NOT NULL,
+            group_id INTEGER NOT NULL,
+            last_seen_num INTEGER,
+            managed INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(host_id, direction, rule_hash)
+        );
+        """
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        print("主机规则元数据表创建成功")
     except Error as e:
         print(f"创建表时出错: {e}")
 
@@ -306,6 +351,8 @@ def main():
             create_template_table(conn)
             create_rule_table(conn)
             create_system_config_table(conn)
+            create_host_rule_groups_table(conn)
+            create_host_rule_metadata_table(conn)
 
             # 创建RBAC相关表（新增和修改）
             create_user_table(conn)  # 修改：移除role_id字段

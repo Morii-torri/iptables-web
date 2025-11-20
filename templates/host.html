@@ -1,7 +1,6 @@
 {% extends 'base.html' %}
 {% block main %}
-<style type="text/tailwindcss">
-    @layer utilities {
+<style>
       /* 提示消息基础样式 - 默认隐藏 */
       .toast {
         position: fixed;
@@ -27,7 +26,6 @@
       .bg-danger { background-color: #ef4444; }
       .text-white { color: white; }
 
-      /* 将所有工具类移至 @layer utilities 内部 */
       .test-toast { color: red; }  /* 新增测试样式 */
       .content-auto {
         content-visibility: auto;
@@ -36,15 +34,31 @@
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
       }
       .btn-hover {
-        @apply transition-all duration-200 hover:shadow-md transform hover:-translate-y-0.5;
+        transition: all 0.2s ease;
+        transform: translateY(0);
+      }
+      .btn-hover:hover {
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        transform: translateY(-2px);
       }
       .sidebar-item {
-        @apply flex items-center px-4 py-3 text-gray-700 hover:bg-primary/10 hover:text-primary transition-colors cursor-pointer;
+        display: flex;
+        align-items: center;
+        padding: 0.75rem 1rem;
+        color: #374151;
+        cursor: pointer;
+        border-left: 4px solid transparent;
+        transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+      }
+      .sidebar-item:hover {
+        background-color: rgb(22 93 255 / 0.1);
+        color: #165dff;
       }
       .sidebar-item.active {
-        @apply bg-primary/10 text-primary border-l-4 border-primary;
+        background-color: rgb(22 93 255 / 0.1);
+        color: #165dff;
+        border-left-color: #165dff;
       }
-    }  /* 仅保留这一个闭合括号 */
 
     /* 侧边栏暗色模式样式 */
     .sidebar-container.dark {

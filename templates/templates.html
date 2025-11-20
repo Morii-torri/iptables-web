@@ -189,6 +189,7 @@
                       <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-2/12">端口</th>
                       <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-2/12">授权对象</th>
                       <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-2/12">描述</th>
+                      <th scope="col" class="px-4 py-3 text-left text-xs font-semibold text-secondary uppercase tracking-wider w-1/12">分组</th>
                       <th scope="col" class="px-4 py-3 text-right text-xs font-semibold text-secondary uppercase tracking-wider w-1/12">操作</th>
                     </tr>
                   </thead>
@@ -252,6 +253,10 @@
             <div class="md:col-span-2">
               <label for="rule-desc" class="block text-sm font-medium text-gray-700 mb-1">描述</label>
               <input type="text" id="rule-desc" name="rule-desc" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="规则的详细描述">
+            </div>
+            <div class="md:col-span-2">
+              <label for="rule-group" class="block text-sm font-medium text-gray-700 mb-1">分组标签</label>
+              <input type="text" id="rule-group" name="rule-group" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="例如：Web服务 或 默认分组">
             </div>
             <!-- 新增：限速输入框 -->
             <div class="md:col-span-2">
@@ -483,7 +488,8 @@
           auth_object: object,
           description: description,
           // 新增：添加限速字段
-          limit: ruleLimit
+          limit: ruleLimit,
+          group_name: row.getAttribute('data-group-name') || '默认分组'
         });
       });
 
@@ -602,6 +608,7 @@
 
           // 新增：存储限速信息
           newRow.setAttribute('data-rule-limit', limit);
+          newRow.setAttribute('data-group-name', rule.group_name || '默认分组');
 
           newRow.innerHTML = `
             <td class="px-4 py-3 whitespace-nowrap text-sm text-secondary">${index + 1}</td>
@@ -614,6 +621,7 @@
             <td class="px-4 py-3 text-sm text-secondary">
               ${descContent}
             </td>
+            <td class="px-4 py-3 text-sm text-secondary">${rule.group_name || '默认分组'}</td>
             <td class="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
               <button class="text-danger hover:text-red-700 transition-colors delete-rule">
                 <i class="fa fa-trash"></i>
@@ -684,6 +692,7 @@
       const object = document.getElementById('rule-object').value;
       const desc = document.getElementById('rule-desc').value;
       const limit = document.getElementById('rule-limit').value.trim();
+      const groupTag = document.getElementById('rule-group').value.trim() || '默认分组';
 
       // 简单验证
       if (!port || !object) {
@@ -702,6 +711,7 @@
       newRow.setAttribute('data-rule-id', '');
       // 新增：存储限速信息
       newRow.setAttribute('data-rule-limit', limit ? `${limit}kb/s` : '');
+      newRow.setAttribute('data-group-name', groupTag);
 
       // 构建描述内容，包含限速信息（如果有）
       let descContent = '';
@@ -728,6 +738,7 @@
         <td class="px-4 py-3 whitespace-nowrap text-sm text-secondary">${port}</td>
         <td class="px-4 py-3 text-sm text-secondary">${object}</td>
         <td class="px-4 py-3 text-sm text-secondary">${desc || '-'}</td>
+        <td class="px-4 py-3 text-sm text-secondary">${groupTag}</td>
         <td class="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
           <button class="text-danger hover:text-red-700 transition-colors delete-rule">
             <i class="fa fa-trash"></i>

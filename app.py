@@ -10,6 +10,7 @@ from functools import wraps
 import sqlite3
 import re
 import paramiko
+import hashlib
 from paramiko.client import AutoAddPolicy
 import math
 from io import StringIO
@@ -40,12 +41,270 @@ app.static_folder = 'static'
 scheduler = APScheduler()
 
 
-# 生成6位随机小写英文字母组成的名字
+RULE_GROUP_DEFAULT_NAME = '默认分组'
+
+
 def random_name(length=6):
-    # 定义小写英文字母范围（a-z对应的ASCII码是97-122）
-    letters = [chr(i) for i in range(97, 123)]  # 等价于 ['a','b',...,'z']
-    # 从letters中随机选6个字符，拼接成字符串
+    """生成6位随机小写英文字母组成的名字"""
+    letters = [chr(i) for i in range(97, 123)]
     return ''.join(random.choice(letters) for _ in range(length))
+
+
+def ensure_schema_extensions():
+    """确保新增的分组相关表结构存在"""
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS host_rule_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            host_id INTEGER NOT NULL,
+            direction TEXT NOT NULL,
+            name TEXT NOT NULL,
+            is_default INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(host_id, direction, name)
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS host_rule_metadata (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            host_id INTEGER NOT NULL,
+            direction TEXT NOT NULL,
+            rule_hash TEXT NOT NULL,
+            group_id INTEGER NOT NULL,
+            last_seen_num INTEGER,
+            managed INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(host_id, direction, rule_hash),
+            FOREIGN KEY(group_id) REFERENCES host_rule_groups(id) ON DELETE CASCADE
+        )
+    ''')
+    # 为模板规则添加分组列
+    cursor.execute('PRAGMA table_info(rules)')
+    rule_columns = [row[1] for row in cursor.fetchall()]
+    if 'group_name' not in rule_columns:
+        cursor.execute(f"ALTER TABLE rules ADD COLUMN group_name TEXT DEFAULT '{RULE_GROUP_DEFAULT_NAME}'")
+    conn.commit()
+    conn.close()
+
+
+ensure_schema_extensions()
+
+
+def normalize_port_value(protocol: str, port: str) -> str:
+    protocol = (protocol or '').lower()
+    port = (port or '').strip()
+    if protocol not in ('tcp', 'udp'):
+        return '-1/-1'
+    if not port or port in ('-1', '-1/-1'):
+        return '-1/-1'
+    if '-' in port:
+        start, end = port.split('-', 1)
+        return f"{start.strip()}:{end.strip()}"
+    return ','.join([p.strip() for p in port.split(',') if p.strip()]) or '-1/-1'
+
+
+def normalize_rule_representation(policy: str, protocol: str, source: str, port: str,
+                                 limit: str = '', comment: str = '', destination: str = '0.0.0.0/0'):
+    return {
+        'num': 0,
+        'target': (policy or '').upper(),
+        'prot': (protocol or '').lower(),
+        'source': source or '0.0.0.0/0',
+        'destination': destination or '0.0.0.0/0',
+        'port': normalize_port_value(protocol, port),
+        'limit': limit or '',
+        'comment': comment or ''
+    }
+
+
+def compute_rule_hash(rule_dict: dict) -> str:
+    raw = '||'.join([
+        str(rule_dict.get('target', '')).upper(),
+        str(rule_dict.get('prot', '')).lower(),
+        str(rule_dict.get('source', '')),
+        str(rule_dict.get('destination', '')),
+        str(rule_dict.get('port', '')),
+        str(rule_dict.get('limit', '')),
+        str(rule_dict.get('comment', ''))
+    ])
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def ensure_host_group(host_id: int, direction: str, name: str, *, is_default: bool = False):
+    db = get_db()
+    cursor = db.cursor()
+    direction = direction.upper()
+    cursor.execute(
+        '''SELECT id FROM host_rule_groups WHERE host_id = ? AND direction = ? AND name = ?''',
+        (host_id, direction, name)
+    )
+    row = cursor.fetchone()
+    if row:
+        return row['id']
+    cursor.execute(
+        '''INSERT INTO host_rule_groups (host_id, direction, name, is_default, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)''',
+        (host_id, direction, name, 1 if is_default else 0,
+         datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+         datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    )
+    db.commit()
+    return cursor.lastrowid
+
+
+def ensure_default_group(host_id: int, direction: str):
+    return ensure_host_group(host_id, direction, RULE_GROUP_DEFAULT_NAME, is_default=True)
+
+
+def get_host_rule_groups(host_id: int, direction: str):
+    db = get_db()
+    cursor = db.cursor()
+    direction = direction.upper()
+    cursor.execute('''
+        SELECT g.id, g.name, g.direction, g.is_default,
+               COUNT(m.id) AS rule_count
+        FROM host_rule_groups g
+        LEFT JOIN host_rule_metadata m
+          ON g.id = m.group_id
+        WHERE g.host_id = ? AND g.direction = ?
+        GROUP BY g.id
+        ORDER BY g.is_default DESC, g.created_at ASC
+    ''', (host_id, direction))
+    rows = cursor.fetchall()
+    return [
+        {
+            'id': row['id'],
+            'name': row['name'],
+            'direction': row['direction'],
+            'is_default': bool(row['is_default']),
+            'rule_count': row['rule_count']
+        }
+        for row in rows
+    ]
+
+
+def assign_rule_to_group(host_id: int, direction: str, rule_hash: str, group_id: int,
+                         *, managed: bool = True, last_seen: int | None = None):
+    db = get_db()
+    cursor = db.cursor()
+    direction = direction.upper()
+    cursor.execute('''SELECT id FROM host_rule_groups WHERE id = ? AND host_id = ? AND direction = ?''',
+                   (group_id, host_id, direction))
+    group_row = cursor.fetchone()
+    if not group_row:
+        group_id = ensure_default_group(host_id, direction)
+    cursor.execute('''
+        INSERT INTO host_rule_metadata (host_id, direction, rule_hash, group_id, last_seen_num, managed, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(host_id, direction, rule_hash)
+        DO UPDATE SET group_id = excluded.group_id,
+                      last_seen_num = excluded.last_seen_num,
+                      managed = excluded.managed,
+                      updated_at = excluded.updated_at
+    ''', (host_id, direction, rule_hash, group_id, last_seen,
+          1 if managed else 0,
+          datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+          datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+    db.commit()
+
+
+def remove_rule_metadata_by_hash(host_id: int, direction: str, rule_hashes):
+    if not rule_hashes:
+        return
+    db = get_db()
+    cursor = db.cursor()
+    placeholders = ','.join(['?'] * len(rule_hashes))
+    cursor.execute(
+        f"""
+        DELETE FROM host_rule_metadata
+        WHERE host_id = ? AND direction = ? AND rule_hash IN ({placeholders})
+        """,
+        (host_id, direction.upper(), *rule_hashes)
+    )
+    db.commit()
+
+
+def attach_rule_groups_to_data(host_id: int, direction: str, rules: list[dict]):
+    if not rules:
+        return []
+    db = get_db()
+    cursor = db.cursor()
+    direction = direction.upper()
+    ensure_default_group(host_id, direction)
+    cursor.execute('''
+        SELECT m.id, m.rule_hash, m.group_id, g.name
+        FROM host_rule_metadata m
+        JOIN host_rule_groups g ON g.id = m.group_id
+        WHERE m.host_id = ? AND m.direction = ?
+    ''', (host_id, direction))
+    metadata = {row['rule_hash']: row for row in cursor.fetchall()}
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    default_group_id = ensure_default_group(host_id, direction)
+    for rule in rules:
+        rule_hash = compute_rule_hash(rule)
+        rule['rule_hash'] = rule_hash
+        meta = metadata.get(rule_hash)
+        if meta:
+            rule['group_name'] = meta['name']
+            rule['group_id'] = meta['group_id']
+            cursor.execute('UPDATE host_rule_metadata SET last_seen_num = ?, updated_at = ? WHERE id = ?',
+                           (rule['num'], now, meta['id']))
+        else:
+            cursor.execute('''
+                INSERT INTO host_rule_metadata (host_id, direction, rule_hash, group_id, last_seen_num, managed, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+            ''', (host_id, direction, rule_hash, default_group_id, rule['num'], now, now))
+            rule['group_name'] = RULE_GROUP_DEFAULT_NAME
+            rule['group_id'] = default_group_id
+    db.commit()
+    return get_host_rule_groups(host_id, direction)
+
+
+def build_rule_command(direction: str, rule_data: dict, *, action: str = '-I', position: int | None = None):
+    """构造iptables命令并返回标准化后的规则表示"""
+    direction = direction.upper()
+    policy = (rule_data.get('auth_policy') or rule_data.get('policy') or 'ACCEPT').upper()
+    protocol = (rule_data.get('protocol') or '').lower()
+    source = rule_data.get('auth_object') or rule_data.get('source') or '0.0.0.0/0'
+    port = rule_data.get('port') or '-1/-1'
+    limit = rule_data.get('limit') or ''
+    comment = rule_data.get('description') or rule_data.get('comment') or ''
+
+    normalized = normalize_rule_representation(policy, protocol, source, port, limit, comment)
+
+    if action not in ('-I', '-A'):
+        action = '-I'
+    if action == '-I' and position:
+        base = f"iptables -I {direction} {position}"
+    else:
+        base = f"iptables {action} {direction}"
+
+    parts = [base, f"-s {source}"]
+    if protocol:
+        parts.append(f"-p {protocol}")
+
+    normalized_port = normalized['port']
+    if protocol in ('tcp', 'udp') and normalized_port != '-1/-1':
+        if ',' in normalized_port:
+            parts.append(f"-m multiport --dports {normalized_port}")
+        else:
+            parts.append(f"--dport {normalized_port}")
+
+    parts.append(f"-j {policy}")
+
+    if limit:
+        parts.append('-m hashlimit --hashlimit-mode srcip,dstport')
+        parts.append(f"--hashlimit-above {limit}")
+        parts.append(f"--hashlimit-name {random_name()}")
+
+    safe_comment = comment.replace('"', '\\"')
+    parts.append(f'-m comment --comment "{safe_comment}"')
+
+    command = ' '.join(parts)
+    return command, normalized
 
 # 新增：日志清理任务
 def clean_expired_logs():
@@ -399,7 +658,8 @@ def rules_in():
                 sudo_password=sudo_password
             )
         data_list = get_rule(iptables_output)
-        return render_template('rule.html', data_list=data_list, id=host_id)
+        groups = attach_rule_groups_to_data(host_id, 'INPUT', data_list)
+        return render_template('rule.html', data_list=data_list, id=host_id, groups=groups, direction='INPUT')
     except Exception as e:
         # 错误处理
         return f"获取主机数据失败: {str(e)}", 500
@@ -444,7 +704,8 @@ def rules_out():
                 sudo_password=sudo_password
             )
         data_list = get_rule(iptables_output)
-        return render_template('rule.html', data_list=data_list, id=host_id)
+        groups = attach_rule_groups_to_data(host_id, 'OUTPUT', data_list)
+        return render_template('rule.html', data_list=data_list, id=host_id, groups=groups, direction='OUTPUT')
     except Exception as e:
         # 错误处理
         return f"获取主机数据失败: {str(e)}", 500
@@ -455,10 +716,12 @@ def rules_out():
 @login_required
 @permission_required('iptab_edit')  # 添加规则编辑权限
 def rules_update():
-    all_params = request.get_json()
-    host_id = int(all_params['host_id'])
-    rule_id = all_params['rule_id']
-    direction = all_params['direction']
+    data = request.get_json() or {}
+    host_id = int(data['host_id'])
+    rule_id = int(data['rule_id'])
+    direction = (data['direction'] or 'INPUT').upper()
+    group_id = data.get('group_id')
+    previous_hash = data.get('rule_hash')
     try:
         host = get_host_connection_info(host_id)
         hostname = host['ip_address']
@@ -474,136 +737,167 @@ def rules_update():
 
         def run_cmd(command: str):
             if auth_method == 'password':
-                return pwd_shell_cmd(
-                    hostname=hostname,
-                    user=user,
-                    port=port,
-                    pwd=pwd,
-                    cmd=command,
-                    needs_sudo=requires_sudo,
-                    passwordless_sudo=passwordless_sudo,
-                    sudo_password=sudo_password
-                )
-            return sshkey_shell_cmd(
-                hostname=hostname,
-                user=user,
-                port=port,
-                private_key_str=private_key,
-                cmd=command,
-                needs_sudo=requires_sudo,
-                passwordless_sudo=passwordless_sudo,
-                sudo_password=sudo_password
-            )
+                return pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd, cmd=command,
+                                     needs_sudo=requires_sudo,
+                                     passwordless_sudo=passwordless_sudo,
+                                     sudo_password=sudo_password)
+            return sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key, cmd=command,
+                                    needs_sudo=requires_sudo,
+                                    passwordless_sudo=passwordless_sudo,
+                                    sudo_password=sudo_password)
 
-        run_cmd('iptables -D {} {}'.format(direction, rule_id))
-
-        if 'tcp' in all_params['protocol'] or 'udp' in all_params['protocol']:
-            if '-1/-1' not in all_params['port']:
-                if '-' in all_params['port']:
-                    new_port = all_params['port'].replace('-', ':')
-                    if all_params['limit'] == '':
-                        cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
-                            direction, rule_id, all_params['auth_object'], all_params['protocol'], new_port,
-                            all_params['auth_policy'], all_params['description'])
-                    else:
-                        cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                            direction, rule_id, all_params['auth_object'], all_params['protocol'], new_port,
-                            all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-                elif ',' in all_params['port']:
-                    if all_params['limit'] == '':
-                        cmd = 'iptables -I {}  {} -s {} -p {} -m multiport --dports {} -j {} -m comment --comment "{}"'.format(
-                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                            all_params['port'],
-                            all_params['auth_policy'], all_params['description'])
-                    else:
-                        cmd = 'iptables -I {}  {} -s {} -p {} -m multiport --dports {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment --comment "{}" '.format(
-                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                            all_params['port'],
-                            all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-                else:
-                    if all_params['limit'] == '':
-                        cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
-                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                            all_params['port'],
-                            all_params['auth_policy'], all_params['description'])
-                    else:
-                        cmd = 'iptables -I {}  {} -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                            direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                            all_params['port'],
-                            all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-            else:
-                if all_params['limit'] == '':
-                    cmd = 'iptables -I {}  {} -s {} -p {} -j {} -m comment  --comment "{}"'.format(
-                        direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                        all_params['auth_policy'], all_params['description'])
-                else:
-                    cmd = 'iptables -I {}  {} -s {} -p {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                        direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                        all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-        else:
-            if all_params['limit'] == '':
-                cmd = 'iptables -I {}  {} -s {} -p {}  -j {} -m comment  --comment "{}"'.format(
-                    direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                    all_params['auth_policy'], all_params['description'])
-            else:
-                cmd = 'iptables -I {}  {} -s {} -p {}  -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                    direction, rule_id, all_params['auth_object'], all_params['protocol'],
-                    all_params['auth_policy'], all_params['limit'], rule_id, all_params['description'])
-
-        run_cmd(cmd)
+        run_cmd(f'iptables -D {direction} {rule_id}')
+        command, normalized = build_rule_command(direction, data, action='-I', position=rule_id)
+        run_cmd(command)
 
         if operating_system in ('centos', 'redhat'):
             run_cmd('iptables-save > /etc/sysconfig/iptables')
         elif operating_system in ('debian', 'ubuntu'):
             run_cmd('iptables-save > /etc/iptables/rules.v4')
 
-        iptables_output = run_cmd('iptables -nL {} --line-number -t filter'.format(direction))
+        new_hash = compute_rule_hash(normalized)
+        if previous_hash and previous_hash != new_hash:
+            remove_rule_metadata_by_hash(host_id, direction, [previous_hash])
+        if group_id:
+            assign_rule_to_group(host_id, direction, new_hash, int(group_id), managed=True, last_seen=rule_id)
+        else:
+            assign_rule_to_group(host_id, direction, new_hash, ensure_default_group(host_id, direction), managed=True,
+                                 last_seen=rule_id)
 
-        # 【修复】记录成功日志
         log_operation(
             user_id=current_user.id,
             username=current_user.username,
-            operation_type='添加',
+            operation_type='编辑',
             operation_object='防火墙规则',
-            operation_summary=f"添加防火墙规则: {all_params['protocol']} {all_params['port']} ({direction})",
+            operation_summary=f"编辑防火墙规则: {data.get('protocol')} {data.get('port')} ({direction})",
             operation_details=json.dumps({
                 "host_id": host_id,
                 "host_ip": hostname,
                 "rule_id": rule_id,
                 "direction": direction,
-                "protocol": all_params['protocol'],
-                "port": all_params['port'],
-                "policy": all_params['auth_policy'],
-                "source": all_params['auth_object'],
-                "description": all_params['description'],
+                "protocol": data.get('protocol'),
+                "port": data.get('port'),
+                "policy": data.get('auth_policy'),
+                "source": data.get('auth_object'),
+                "description": data.get('description'),
                 "operating_system": operating_system,
                 "operation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }),
             success=1
         )
 
-        data_list = get_rule(iptables_output)
-        return render_template('rule.html', data_list=data_list, id=host_id)
+        return jsonify({'success': True})
     except Exception as e:
-        # 【修复】记录失败日志
         log_operation(
             user_id=current_user.id,
             username=current_user.username,
-            operation_type='添加',
+            operation_type='编辑',
             operation_object='防火墙规则',
-            operation_summary=f"添加防火墙规则失败: {all_params.get('protocol')} {all_params.get('port')}",
+            operation_summary=f"编辑防火墙规则失败: {data.get('protocol')} {data.get('port')}",
             operation_details=json.dumps({
                 "host_id": host_id,
                 "rule_id": rule_id,
                 "direction": direction,
-                "request_data": all_params,  # 完整请求参数
+                "request_data": data,
                 "error": str(e),
                 "error_type": type(e).__name__,
                 "operation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }),
             success=0
         )
-        return f"获取主机数据失败: {str(e)}", 500
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route("/rules_add", methods=['POST'])
+@login_required
+@permission_required('iptab_add')
+def rules_add():
+    data = request.get_json() or {}
+    host_id = int(data['host_id'])
+    rule_id = int(data['rule_id'])
+    direction = (data['direction'] or 'INPUT').upper()
+    group_id = data.get('group_id')
+    try:
+        host = get_host_connection_info(host_id)
+        hostname = host['ip_address']
+        port = host['ssh_port']
+        user = host['username']
+        pwd = host['password']
+        auth_method = host['auth_method']
+        private_key = host['private_key']
+        operating_system = host['operating_system']
+        requires_sudo = host['requires_sudo']
+        passwordless_sudo = host['passwordless_sudo']
+        sudo_password = host['sudo_password']
+
+        def run_cmd(command: str):
+            if auth_method == 'password':
+                return pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd, cmd=command,
+                                     needs_sudo=requires_sudo,
+                                     passwordless_sudo=passwordless_sudo,
+                                     sudo_password=sudo_password)
+            return sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key, cmd=command,
+                                    needs_sudo=requires_sudo,
+                                    passwordless_sudo=passwordless_sudo,
+                                    sudo_password=sudo_password)
+
+        command, normalized = build_rule_command(direction, data, action='-I', position=rule_id)
+        run_cmd(command)
+
+        if operating_system in ('centos', 'redhat'):
+            run_cmd('iptables-save > /etc/sysconfig/iptables')
+        elif operating_system in ('debian', 'ubuntu'):
+            run_cmd('iptables-save > /etc/iptables/rules.v4')
+
+        rule_hash = compute_rule_hash(normalized)
+        if group_id:
+            assign_rule_to_group(host_id, direction, rule_hash, int(group_id), managed=True, last_seen=rule_id)
+        else:
+            assign_rule_to_group(host_id, direction, rule_hash, ensure_default_group(host_id, direction), managed=True,
+                                 last_seen=rule_id)
+
+        log_operation(
+            user_id=current_user.id,
+            username=current_user.username,
+            operation_type='添加',
+            operation_object='防火墙规则',
+            operation_summary=f"添加防火墙规则: {data.get('protocol')} {data.get('port')} ({direction})",
+            operation_details=json.dumps({
+                "host_id": host_id,
+                "host_ip": hostname,
+                "rule_id": rule_id,
+                "direction": direction,
+                "protocol": data.get('protocol'),
+                "port": data.get('port'),
+                "policy": data.get('auth_policy'),
+                "source": data.get('auth_object'),
+                "description": data.get('description'),
+                "operating_system": operating_system,
+                "operation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }),
+            success=1
+        )
+
+        return jsonify({'success': True})
+    except Exception as e:
+        log_operation(
+            user_id=current_user.id,
+            username=current_user.username,
+            operation_type='添加',
+            operation_object='防火墙规则',
+            operation_summary=f"添加防火墙规则失败: {data.get('protocol')} {data.get('port')}",
+            operation_details=json.dumps({
+                "host_id": host_id,
+                "rule_id": rule_id,
+                "direction": direction,
+                "request_data": data,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "operation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }),
+            success=0
+        )
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 # 删除规则
@@ -645,7 +939,9 @@ def del_rule():
         elif operating_system in ('debian', 'ubuntu'):
             run_cmd('iptables-save > /etc/iptables/rules.v4')
         data_list = get_rule(iptables_output)
-        # 【修复】记录成功日志
+        rule_hash = all_params.get('rule_hash')
+        if rule_hash:
+            remove_rule_metadata_by_hash(host_id, direction, [rule_hash])
         log_operation(
             user_id=current_user.id,
             username=current_user.username,
@@ -662,7 +958,7 @@ def del_rule():
             }),
             success=1
         )
-        return render_template('rule.html', data_list=data_list, id=host_id)
+        return jsonify({'success': True})
     except Exception as e:
         # 【修复】记录失败日志
         log_operation(
@@ -682,7 +978,149 @@ def del_rule():
             success=0
         )
         # 错误处理
-        return f"获取主机数据失败: {str(e)}", 500
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/hosts/<int:host_id>/rule-groups', methods=['GET'])
+@login_required
+@permission_required('iptab_view')
+def list_rule_groups(host_id):
+    direction = (request.args.get('direction') or 'INPUT').upper()
+    try:
+        get_host_connection_info(host_id)
+        groups = get_host_rule_groups(host_id, direction)
+        return jsonify({'success': True, 'data': groups})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/hosts/<int:host_id>/rule-groups', methods=['POST'])
+@login_required
+@permission_required('iptab_edit')
+def create_rule_group(host_id):
+    data = request.get_json() or {}
+    direction = (data.get('direction') or 'INPUT').upper()
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'success': False, 'message': '分组名称不能为空'}), 400
+    try:
+        get_host_connection_info(host_id)
+        group_id = ensure_host_group(host_id, direction, name)
+        groups = get_host_rule_groups(host_id, direction)
+        log_operation(
+            user_id=current_user.id,
+            username=current_user.username,
+            operation_type='添加',
+            operation_object='规则分组',
+            operation_summary=f"创建分组: {name} ({direction})",
+            operation_details=json.dumps({
+                'host_id': host_id,
+                'direction': direction,
+                'group_id': group_id,
+                'group_name': name
+            }),
+            success=1
+        )
+        return jsonify({'success': True, 'data': groups})
+    except sqlite3.IntegrityError:
+        return jsonify({'success': False, 'message': '分组名称已存在'}), 409
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/hosts/<int:host_id>/rules/group', methods=['POST'])
+@login_required
+@permission_required('iptab_edit')
+def move_rules_to_group(host_id):
+    data = request.get_json() or {}
+    direction = (data.get('direction') or 'INPUT').upper()
+    group_id = data.get('group_id')
+    rule_hashes = data.get('rule_hashes') or []
+    if not group_id or not rule_hashes:
+        return jsonify({'success': False, 'message': '缺少必要参数'}), 400
+    try:
+        for rule_hash in set(rule_hashes):
+            assign_rule_to_group(host_id, direction, rule_hash, int(group_id), managed=True)
+        groups = get_host_rule_groups(host_id, direction)
+        return jsonify({'success': True, 'data': groups})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/hosts/<int:host_id>/rules/batch-delete', methods=['POST'])
+@login_required
+@permission_required('iptab_del')
+def batch_delete_rules(host_id):
+    data = request.get_json() or {}
+    direction = (data.get('direction') or 'INPUT').upper()
+    rule_ids = data.get('rule_ids') or []
+    rule_hashes = data.get('rule_hashes') or []
+    if not rule_ids:
+        return jsonify({'success': False, 'message': '请选择需要删除的规则'}), 400
+    try:
+        host = get_host_connection_info(host_id)
+        hostname = host['ip_address']
+        port = host['ssh_port']
+        user = host['username']
+        pwd = host['password']
+        auth_method = host['auth_method']
+        private_key = host['private_key']
+        operating_system = host['operating_system']
+        requires_sudo = host['requires_sudo']
+        passwordless_sudo = host['passwordless_sudo']
+        sudo_password = host['sudo_password']
+
+        def run_cmd(command: str):
+            if auth_method == 'password':
+                return pwd_shell_cmd(hostname=hostname, user=user, port=port, pwd=pwd, cmd=command,
+                                     needs_sudo=requires_sudo,
+                                     passwordless_sudo=passwordless_sudo,
+                                     sudo_password=sudo_password)
+            return sshkey_shell_cmd(hostname=hostname, user=user, port=port, private_key_str=private_key, cmd=command,
+                                    needs_sudo=requires_sudo,
+                                    passwordless_sudo=passwordless_sudo,
+                                    sudo_password=sudo_password)
+
+        for rule_id in sorted([int(r) for r in rule_ids], reverse=True):
+            run_cmd(f'iptables -D {direction} {rule_id}')
+
+        if operating_system in ('centos', 'redhat'):
+            run_cmd('iptables-save > /etc/sysconfig/iptables')
+        elif operating_system in ('debian', 'ubuntu'):
+            run_cmd('iptables-save > /etc/iptables/rules.v4')
+
+        remove_rule_metadata_by_hash(host_id, direction, rule_hashes)
+
+        log_operation(
+            user_id=current_user.id,
+            username=current_user.username,
+            operation_type='批量删除',
+            operation_object='防火墙规则',
+            operation_summary=f"批量删除{len(rule_ids)}条规则 (方向: {direction})",
+            operation_details=json.dumps({
+                'host_id': host_id,
+                'direction': direction,
+                'rule_ids': rule_ids
+            }),
+            success=1
+        )
+        return jsonify({'success': True})
+    except Exception as e:
+        log_operation(
+            user_id=current_user.id,
+            username=current_user.username,
+            operation_type='批量删除',
+            operation_object='防火墙规则',
+            operation_summary='批量删除防火墙规则失败',
+            operation_details=json.dumps({
+                'host_id': host_id,
+                'direction': direction,
+                'rule_ids': rule_ids,
+                'error': str(e)
+            }),
+            success=0
+        )
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 # 查看主机
@@ -1101,6 +1539,7 @@ def templates():
                     'created_at': rule['created_at'],
                     'updated_at': rule['updated_at'],
                     'limit': rule['limit'],
+                    'group_name': rule['group_name'] or RULE_GROUP_DEFAULT_NAME,
                 })
 
             temp_info.append({'template_id': template_id,
@@ -1168,20 +1607,21 @@ def templates_add():
             else:
                 policy = 'DROP'
             cursor.execute('''
-            INSERT INTO rules 
-            (template_id, policy, protocol, port, auth_object, description, created_at, updated_at, "limit")
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                template_id,
-                policy,
-                rule['protocol'],
-                rule['port'],
-                rule['auth_object'],
-                rule['description'],
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                rule['limit']
-            ))
+                INSERT INTO rules
+                (template_id, policy, protocol, port, auth_object, description, created_at, updated_at, "limit", group_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    template_id,
+                    policy,
+                    rule['protocol'],
+                    rule['port'],
+                    rule['auth_object'],
+                    rule['description'],
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    rule['limit'],
+                    rule.get('group_name') or RULE_GROUP_DEFAULT_NAME
+                ))
 
             # 获取规则数量用于日志
             rule_count = len(data['rules'])
@@ -1364,9 +1804,9 @@ def templates_edit():
                 policy = 'DROP'
             # 添加新规则
             cursor.execute('''
-            INSERT INTO rules 
-            (template_id, policy, protocol, port, auth_object, description, created_at, updated_at, "limit")
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO rules
+            (template_id, policy, protocol, port, auth_object, description, created_at, updated_at, "limit", group_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 data['temp_id'],
                 policy,
@@ -1376,7 +1816,8 @@ def templates_edit():
                 rule['description'],
                 datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                rule.get('limit', '')  # 添加limit字段
+                rule.get('limit', ''),
+                rule.get('group_name') or RULE_GROUP_DEFAULT_NAME
             ))
             rule_count += 1
             db.commit()
@@ -1505,81 +1946,29 @@ def temp_to_hosts():
         cursor.execute(''' select direction from templates  where id = {} ;'''.format(template_id))
         direction_data = cursor.fetchone()
         direction = direction_data[0]
-        # 查询所有主机数据
-        cursor.execute('''SELECT * FROM  rules
-        where template_id = {}
-        '''.format(template_id))
-        # 获取所有记录
+        cursor.execute('SELECT * FROM  rules where template_id = ?', (template_id,))
         temp_data = cursor.fetchall()
-        cmd_list = []
+        prepared_rules = []
         for rule in temp_data:
-            # 正常的tcp或udp规则
-            if 'tcp' in rule['protocol'].lower() or 'udp' in rule['protocol'].lower():
-                # 正常的端口
-                if '-1/-1' not in rule['port']:
-                    # 添加规则中的：正常端口中的范围端口
-                    if '-' in rule['port']:
-                        new_port = rule['port'].replace("-", ":")
-                        if rule['limit'] == '':
-                            cmd = 'iptables -A {}  -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
-                                direction, rule['auth_object'], rule['protocol'], new_port,
-                                rule['policy'], rule['description'])
-                        else:
-                            cmd = 'iptables -A {}  -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                                direction, rule['auth_object'], rule['protocol'], new_port,
-                                rule['policy'], rule['limit'], random_name(), rule['description'])
-                        cmd_list.append(cmd)
-                    # 添加规则中的: 正常端口中的多个端口
-                    elif ',' in rule['port']:
-                        if rule['limit'] == '':
-                            cmd = 'iptables -A {}  -s {} -p {} -m multiport --dports {} -j {} -m comment --comment "{}" '.format(
-                                direction, rule['auth_object'], rule['protocol'],
-                                rule['port'],
-                                rule['policy'], rule['description'])
-                        else:
-                            cmd = 'iptables -A {}  -s {} -p {} -m multiport --dports {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment --comment "{}" '.format(
-                                direction, rule['auth_object'], rule['protocol'],
-                                rule['port'],
-                                rule['policy'], rule['limit'], random_name(), rule['description'])
-                        cmd_list.append(cmd)
-                    else:
-                        if rule['limit'] == '':
-                            cmd = 'iptables -A {}  -s {} -p {} --dport {} -j {} -m comment  --comment "{}"'.format(
-                                direction, rule['auth_object'], rule['protocol'],
-                                rule['port'],
-                                rule['policy'], rule['description'])
-                        else:
-                            cmd = 'iptables -A {}  -s {} -p {} --dport {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}" '.format(
-                                direction, rule['auth_object'], rule['protocol'],
-                                rule['port'],
-                                rule['policy'], rule['limit'], random_name(), rule['description'])
-                        cmd_list.append(cmd)
-                else:
-                    if rule['limit'] == '':
-                        # tcp 或udp的所有端口
-                        cmd = 'iptables -A {} -s {} -p {} -j {} -m comment  --comment "{}"'.format(
-                            direction, rule['auth_object'], rule['protocol'],
-                            rule['policy'], rule['description'])
-                    else:
-                        # tcp 或udp的所有端口
-                        cmd = 'iptables -A {} -s {} -p {} -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}"'.format(
-                            direction, rule['auth_object'], rule['protocol'],
-                            rule['policy'], rule['limit'], random_name(), rule['description'])
-                    cmd_list.append(cmd)
-            # ICMP 或 all 协议的规则
-            else:
-                if rule['limit'] == '':
-                    cmd = 'iptables -A {}  -s {} -p {}  -j {} -m comment  --comment "{}"'.format(
-                        direction, rule['auth_object'], rule['protocol'],
-                        rule['policy'], rule['description'])
-                else:
-                    cmd = 'iptables -A {}  -s {} -p {}  -j {} -m hashlimit --hashlimit-mode srcip,dstport --hashlimit-above {} --hashlimit-name {} -m comment  --comment "{}"'.format(
-                        direction, rule['auth_object'], rule['protocol'],
-                        rule['policy'], rule['limit'], random_name(), rule['description'])
-                cmd_list.append(cmd)
+            payload = {
+                'auth_policy': rule['policy'],
+                'protocol': rule['protocol'],
+                'port': rule['port'],
+                'auth_object': rule['auth_object'],
+                'description': rule['description'],
+                'limit': rule['limit']
+            }
+            command, normalized = build_rule_command(direction, payload, action='-A')
+            prepared_rules.append({
+                'command': command,
+                'hash': compute_rule_hash(normalized),
+                'group_name': rule['group_name'] or RULE_GROUP_DEFAULT_NAME
+            })
         # 获取主机的信息
+        total_applied = 0
         for host_id in host_ids_list:
-            host = get_host_connection_info(int(host_id))
+            host_id_int = int(host_id)
+            host = get_host_connection_info(host_id_int)
             hostname = host['ip_address']
             port = host['ssh_port']
             user = host['username']
@@ -1602,12 +1991,29 @@ def temp_to_hosts():
                                          passwordless_sudo=passwordless_sudo,
                                          sudo_password=sudo_password)
 
-            for cmd in cmd_list:
-                run_cmd(cmd)
+            existing_output = run_cmd(f'iptables -nL {direction} --line-number -t filter')
+            existing_rules = get_rule(existing_output)
+            existing_hashes = {compute_rule_hash(rule) for rule in existing_rules}
+            applied_entries = []
+
+            for prepared in prepared_rules:
+                if prepared['hash'] in existing_hashes:
+                    continue
+                run_cmd(prepared['command'])
+                applied_entries.append(prepared)
+                existing_hashes.add(prepared['hash'])
+
+            if applied_entries:
                 if operating_system in ('centos', 'redhat'):
                     run_cmd('iptables-save > /etc/sysconfig/iptables')
                 elif operating_system in ('debian', 'ubuntu'):
                     run_cmd('iptables-save > /etc/iptables/rules.v4')
+
+                for entry in applied_entries:
+                    group_id = ensure_host_group(host_id_int, direction, entry['group_name'])
+                    assign_rule_to_group(host_id_int, direction, entry['hash'], group_id, managed=True)
+
+                total_applied += len(applied_entries)
 
         # 【修复】记录成功日志
         log_operation(
@@ -1624,7 +2030,7 @@ def temp_to_hosts():
                     {"host_id": hid, "host_name": host_names.get(hid, "未知主机")}
                     for hid in host_ids_list
                 ],
-                "applied_rules": len(cmd_list),
+                "applied_rules": total_applied,
                 "operation_time": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }),
             success=1
